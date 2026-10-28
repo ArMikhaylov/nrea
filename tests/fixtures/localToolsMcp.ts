@@ -48,6 +48,8 @@ export async function connectLocalToolsMcp(
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       REA_LOG_LEVEL: "silent",
       HOPPER_LAUNCHER_PATH: "/rea-unconfigured-deep-provider/hopper",
+      // Local tool workflows include target-execution tools (process capture).
+      REA_MCP_TARGET_EXECUTION: "enabled",
       ...environment,
     },
     stderr: "pipe",

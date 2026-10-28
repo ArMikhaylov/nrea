@@ -133,7 +133,13 @@ const projects = TEST_PROJECTS.map((project) => {
 
 export default defineConfig({
   test: {
-    env: { TMPDIR: CANONICAL_TEMPORARY_DIRECTORY },
+    env: {
+      TMPDIR: CANONICAL_TEMPORARY_DIRECTORY,
+      // Target-execution tools refuse over MCP unless the operator opts in.
+      // Tests exercise them throughout; unrestrictedCommandsGate.test.ts
+      // removes this setting and proves the default refusal.
+      REA_MCP_TARGET_EXECUTION: "enabled",
+    },
     maxWorkers: MAX_TEST_WORKERS,
     projects,
     ...(process.env.REA_CI_TEST_HISTORY

@@ -403,6 +403,30 @@ it("announces an admitted non-loopback URL and gates it on the operator allowlis
   await expectForeignHostRefused(url);
 });
 
+it("refuses a non-loopback bind when plain-HTTP tokens must stay on loopback, and frees the port", async () => {
+  const refused = start({
+    host: "0.0.0.0",
+    allowedHosts: mcpAllowedHostsTextSchema.parse("127.0.0.1"),
+    bearerToken: "unit-test-token-0123456789abcdefghijklmn",
+    allowNonLoopback: false,
+  });
+  await expect(refused).rejects.toBeInstanceOf(StreamableHttpListenError);
+  const error = (await refused.catch((cause: unknown) => cause)) as
+    | StreamableHttpListenError
+    | undefined;
+  expect(error?.classification).toEqual({
+    ok: true,
+    value: { kind: "host_allowlist", reason: "insecure_transport" },
+  });
+  expect(error?.remediationAction).toContain("REA_MCP_HTTP_INSECURE_NETWORK");
+  // Loopback stays allowed under the same policy.
+  const { served } = await start({
+    allowNonLoopback: false,
+    bearerToken: "unit-test-token-0123456789abcdefghijklmn",
+  });
+  expect(new URL(served.url).hostname).toBe("127.0.0.1");
+});
+
 it("reports a port that cannot be bound as a typed listen error naming the cause", async () => {
   const { served } = await start();
   const failed = serveStreamableHttp({

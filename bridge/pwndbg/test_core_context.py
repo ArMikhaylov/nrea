@@ -14,7 +14,7 @@ BRIDGE = Path(__file__).with_name("core_context.py")
 
 
 class CoreContextTests(unittest.TestCase):
-    def inspect(self, failure=None, connection="core", symbols=None, architecture="x86_64-little-endian", objfile="recorded-executable"):
+    def inspect(self, failure=None, connection="core", symbols=None, architecture="x86_64-little-endian", objfile="recorded-executable", in_stage=True):
         commands, reads, queries = [], [], []
         state = {"executable": None, "symbols": None, "connection": None}
         gdb = types.ModuleType("gdb")
@@ -64,8 +64,14 @@ class CoreContextTests(unittest.TestCase):
             request = stage / "request.json"
             reply = stage / "reply.json"
             request.write_text(json.dumps({"gdbinit": str(plugin), "architecture": architecture, "snapshot_path": str(root / "object.snapshot"), "reply_path": str(reply)}))
-            with patch.dict(sys.modules, modules), patch.dict(os.environ, REA_CORE_CONTEXT_REQUEST=str(request)):
-                runpy.run_path(str(BRIDGE))
+            # REA starts the adapter with the private stage as its cwd.
+            previous = os.getcwd()
+            os.chdir(stage if in_stage else root)
+            try:
+                with patch.dict(sys.modules, modules), patch.dict(os.environ, REA_CORE_CONTEXT_REQUEST=str(request)):
+                    runpy.run_path(str(BRIDGE))
+            finally:
+                os.chdir(previous)
             result = json.loads(reply.read_text())
         return result, commands, reads, queries
 
@@ -78,6 +84,12 @@ class CoreContextTests(unittest.TestCase):
         self.assertLess(commands.index("set debug-file-directory ./no-libraries"), commands.index("core-file ../object.snapshot"))
         self.assertIsNone(result["value"]["executable"])
         self.assertEqual(result["value"]["maps"][0]["current_file_identity"], "unknown")
+
+    def test_refuses_to_run_outside_its_private_stage_before_any_gdb_command(self):
+        result, commands, reads, queries = self.inspect(in_stage=False)
+        self.assertFalse(result["ok"])
+        self.assertIn("private stage directory", result["message"])
+        self.assertEqual((commands, reads, queries), ([], [], []))
 
     def test_failed_guard_core_load_or_discard_never_queries_mappings(self):
         for command in ["exec-file /proc/self/exe", "set architecture i386:x86-64", "core-file ../object.snapshot", "file"]:

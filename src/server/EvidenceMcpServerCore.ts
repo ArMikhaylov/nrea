@@ -51,8 +51,9 @@ import {
 } from "./ToolResultDelivery.js";
 import { toolReturnsTargetContent } from "../contracts/toolEffects.js";
 import {
-  UNRESTRICTED_COMMAND_TOOLS,
-  unrestrictedCommandRefusal,
+  gatedToolRefusal,
+  gatingSetting,
+  MCP_TARGET_EXECUTION_SETTING,
 } from "../config/mcpUnrestrictedCommands.js";
 import {
   carriesTargetContentMarker,
@@ -195,6 +196,8 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
   analysisSettings: AnalysisSettings | undefined;
   /** Operator opt-in for UNRESTRICTED_COMMAND_TOOLS; refused until set. */
   unrestrictedCommandsEnabled = false;
+  /** Operator opt-in for TARGET_EXECUTION_TOOLS; refused until set. */
+  targetExecutionEnabled = false;
   private identity: ReturnType<typeof createCatalogIdentity> | undefined;
 
   /** Composition supplies identity without importing the canonical schema graph. */
@@ -298,11 +301,16 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
         : undefined;
     const registeredConfig =
       inputSchema === undefined ? config : { ...config, inputSchema };
-    const gated = UNRESTRICTED_COMMAND_TOOLS.has(name);
+    const setting = gatingSetting(name);
     const scoped = (input: never, context: never) => {
-      if (gated && !this.unrestrictedCommandsEnabled)
+      const admitted =
+        setting === undefined ||
+        (setting === MCP_TARGET_EXECUTION_SETTING
+          ? this.targetExecutionEnabled
+          : this.unrestrictedCommandsEnabled);
+      if (!admitted)
         return this.delivery.toErrorToolResult(
-          unrestrictedCommandRefusal(name),
+          gatedToolRefusal(name, setting),
           false,
         );
       return this.analysisSettings === undefined

@@ -4,6 +4,7 @@ import {
   parseMcpHttpEndpoint,
   mcpAllowedHostsTextSchema,
   resolveMcpHttpBearerToken,
+  resolveMcpHttpInsecureNetwork,
 } from "../../../src/config/mcpHttpEndpoint.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { runMcpHttpEntrypoint } from "../../../src/main.js";
@@ -110,6 +111,27 @@ describe("MCP_HOST and MCP_PORT", () => {
     expect(generated.ok && generated.value.token).toMatch(
       /^[A-Za-z0-9_-]{43}$/u,
     );
+  });
+
+  it("keeps the HTTP listener on loopback unless the operator accepts plain-HTTP tokens", () => {
+    expect(resolveMcpHttpInsecureNetwork({})).toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(
+      resolveMcpHttpInsecureNetwork({
+        REA_MCP_HTTP_INSECURE_NETWORK: "disabled",
+      }),
+    ).toEqual({ ok: true, value: false });
+    expect(
+      resolveMcpHttpInsecureNetwork({
+        REA_MCP_HTTP_INSECURE_NETWORK: "enabled",
+      }),
+    ).toEqual({ ok: true, value: true });
+    expect(
+      resolveMcpHttpInsecureNetwork({ REA_MCP_HTTP_INSECURE_NETWORK: "yes" })
+        .ok,
+    ).toBe(false);
   });
 
   it("rejects a short or malformed token without echoing it", () => {

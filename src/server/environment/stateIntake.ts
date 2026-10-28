@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import { isAbsolute, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { mediaTypeEssence } from "../../domain/analysisView/recordedMediaType.js";
@@ -66,12 +68,22 @@ export const fetchStateDocument: StateFetcher = (url, signal) =>
 export interface StateIntake {
   readonly fetchState: StateFetcher;
   readonly timeoutMs: number;
+  /**
+   * The canonical directory `file://` uris must resolve inside, or undefined
+   * to refuse them. The listener may be reachable by other local users, so
+   * reading the host's files is an operator decision, not a caller's.
+   */
+  readonly fileRoot: string | undefined;
+  /** Whether `https://` uris may be fetched; off by default so callers cannot make the host send requests. */
+  readonly allowHttps: boolean;
 }
 
-/** The intake a served environment uses. */
+/** The intake a served environment uses unless the operator widens it: inline bytes only. */
 export const DEFAULT_STATE_INTAKE: StateIntake = {
   fetchState: fetchStateDocument,
   timeoutMs: STATE_FETCH_TIMEOUT_MS,
+  fileRoot: undefined,
+  allowHttps: false,
 };
 
 /** Stands in for a number that native JSON parsing or serialization would change. */
@@ -101,6 +113,42 @@ const unreadable = (reason: IntakeFailure): RpcError => ({
   ...invalidParams("the file uri does not name a readable regular file"),
   data: { reason },
 });
+
+const FILE_URIS_DISABLED = invalidParams(
+  "file:// state uris are disabled on this server; send the document as bytes, or ask its operator to set REA_ENVIRONMENT_STATE_ROOT",
+);
+const OUTSIDE_FILE_ROOT = invalidParams(
+  "the file:// uri is outside the directory this server reads state from",
+);
+const HTTPS_URIS_DISABLED = invalidParams(
+  "https:// state uris are disabled on this server; send the document as bytes, or ask its operator to set REA_ENVIRONMENT_STATE_HTTPS=enabled",
+);
+
+/** Whether `path` names `root` or something below it, without leaving it through `..`. */
+const isWithin = (root: string, path: string): boolean => {
+  const fromRoot = relative(root, path);
+  return (
+    fromRoot === "" || (!fromRoot.startsWith("..") && !isAbsolute(fromRoot))
+  );
+};
+
+/**
+ * Refuse a path outside the root before touching it, so the reply reveals
+ * nothing about files elsewhere; then refuse a symlink that leaves the root.
+ */
+const admitStatePath = async (
+  path: string,
+  root: string,
+): Promise<Result<string, RpcError>> => {
+  if (!isWithin(root, path)) return err(OUTSIDE_FILE_ROOT);
+  let canonical: string;
+  try {
+    canonical = await realpath(path);
+  } catch {
+    return err(unreadable("not-found"));
+  }
+  return isWithin(root, canonical) ? ok(canonical) : err(OUTSIDE_FILE_ROOT);
+};
 
 const fetchFailed = (reason: IntakeFailure): RpcError => ({
   code: SERVER_ERROR,
@@ -333,11 +381,17 @@ const fileBytes = async (
       invalidParams("a file part carries exactly one of bytes or a uri"),
     );
   const url = new URL(file.uri);
-  if (url.protocol === "https:") return downloadState(url, intake, cancel);
+  if (url.protocol === "https:")
+    return intake.allowHttps
+      ? downloadState(url, intake, cancel)
+      : err(HTTPS_URIS_DISABLED);
   if (url.protocol !== "file:")
     return err(invalidParams("a file uri is a file:// or https:// URL"));
+  if (intake.fileRoot === undefined) return err(FILE_URIS_DISABLED);
   const path = localFilePath(url);
-  return path.ok ? readStateFile(path.value, files) : path;
+  if (!path.ok) return path;
+  const admitted = await admitStatePath(path.value, intake.fileRoot);
+  return admitted.ok ? readStateFile(admitted.value, files) : admitted;
 };
 
 /** The state document one `data/add` part carries, parsed but not yet validated; `cancel` ends a download and `files` owns file descriptors whose close failed. */

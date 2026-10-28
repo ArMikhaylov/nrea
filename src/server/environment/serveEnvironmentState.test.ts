@@ -3,7 +3,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -77,6 +77,13 @@ const renamedDocument = () => {
   };
 };
 
+/** Operator opt-ins that let these tests exercise file:// and https:// intake. */
+const PERMISSIVE_INTAKE: StateIntake = {
+  ...DEFAULT_STATE_INTAKE,
+  fileRoot: "/",
+  allowHttps: true,
+};
+
 /** A data plane over a fresh store, posting raw bodies to its route; `stopped` is the server's stop signal. */
 const dataPlane = (
   intake: Partial<StateIntake> = {},
@@ -85,7 +92,7 @@ const dataPlane = (
   const store = new EnvironmentStateStore(state);
   const route = environmentRoutes(
     environmentCard("grafana-example", [], "state"),
-    stateDataPlane(store, { ...DEFAULT_STATE_INTAKE, ...intake }, stopped),
+    stateDataPlane(store, { ...PERMISSIVE_INTAKE, ...intake }, stopped),
   ).find((entry) => entry.path === ENVIRONMENT_RPC_PATH);
   if (route === undefined) throw new Error("No data-plane route");
   const post = async (body: unknown, signal?: AbortSignal) => {
@@ -437,6 +444,62 @@ describe("state data plane intake", () => {
     const notified = await plane.post({ jsonrpc: "2.0", method: "data/reset" });
     expect(notified.status).toBe(202);
     expect(loginOf(plane.store)).toBe("probe");
+  });
+});
+
+describe("state data plane intake policy", () => {
+  it("refuses file:// and https:// uris unless the operator opts in, and keeps file:// inside its root", async () => {
+    const text = JSON.stringify(renamedDocument());
+    const root = await createTestTempDirectory("rea-environment-state-root-");
+    const allowed = join(root, "allowed");
+    await mkdir(allowed);
+    const inside = join(allowed, "state.json");
+    const outside = join(root, "outside.json");
+    await writeFile(inside, text);
+    await writeFile(outside, text);
+    let fetched = 0;
+    const fetchState = async () => {
+      fetched += 1;
+      return new Response(text);
+    };
+
+    const closed = dataPlane({ ...DEFAULT_STATE_INTAKE, fetchState });
+    for (const uri of [
+      pathToFileURL(inside).href,
+      "https://state.example.test/state.json",
+    ]) {
+      const reply = await closed.add({ kind: "file", file: { uri } });
+      expect(reply).toMatchObject({ error: { code: -32602 } });
+      expect(JSON.stringify(reply)).toMatch(
+        /REA_ENVIRONMENT_STATE_(ROOT|HTTPS)/u,
+      );
+      expect(JSON.stringify(reply)).not.toContain(root);
+    }
+    expect(fetched).toBe(0);
+
+    const rooted = dataPlane({ fileRoot: allowed, allowHttps: false });
+    await expect(
+      rooted.add({ kind: "file", file: { uri: pathToFileURL(inside).href } }),
+    ).resolves.toMatchObject({ result: {} });
+    await symlink(outside, join(allowed, "escape.json"));
+    for (const path of [
+      outside,
+      join(allowed, "..", "outside.json"),
+      join(allowed, "escape.json"),
+      join(root, "missing-outside.json"),
+    ]) {
+      const reply = await rooted.add({
+        kind: "file",
+        file: { uri: pathToFileURL(path).href },
+      });
+      // Outside the root is refused alike whether or not the file exists.
+      expect(reply).toMatchObject({
+        error: {
+          code: -32602,
+          message: expect.stringContaining("outside the directory"),
+        },
+      });
+    }
   });
 });
 
@@ -850,6 +913,8 @@ const serveState = async (
 ): Promise<ServedEnvironment> => {
   const entry = await serveEnvironment({
     ...inputs,
+    stateFileRoot: "/",
+    allowHttpsState: true,
     ...options,
     host: "127.0.0.1",
     port: 0,

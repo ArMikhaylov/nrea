@@ -501,6 +501,11 @@ The server derives the state from the capture before it binds and serves from
 it, or serves replay with `--replay-only` or when the state is unavailable;
 see [Serve from the state](#serve-from-the-state).
 
+When `REA_MCP_HTTP_TOKEN` is set, every request must carry
+`Authorization: Bearer <token>`, as for `rea mcp --http`. It is not generated
+when unset, because AgentEnv clients may not send headers; the server then
+logs a warning that it accepts unauthenticated requests.
+
 `--host` and `--port` default to `MCP_HOST` and `MCP_PORT` from the
 environment, then to `127.0.0.1` and an ephemeral port, exactly as
 [`rea mcp --http`](cli.md#serve-mcp-over-streamable-http) resolves them. The
@@ -807,7 +812,15 @@ either a `file://` URL of a local regular file, whose host is empty or
 within 30 seconds, including reading the body; `mimeType`, when given, is
 `application/json`. A `file://` URL naming another host, or a UNC path such as
 `file:////server/share/state.json`, is refused before anything is opened, so a
-load never reaches a network share. A loaded document is at most 32
+load never reaches a network share. Uri intake is the operator's decision,
+because the listener can be reachable by other local processes and users:
+`file://` uris are refused unless `REA_ENVIRONMENT_STATE_ROOT` names an
+existing absolute directory, and then only files that resolve inside it,
+symlinks included, are read; a path outside it is refused the same way whether
+or not it exists. `https://` uris are refused unless
+`REA_ENVIRONMENT_STATE_HTTPS=enabled`. Inline `bytes` and `data` parts always
+work. The exported bundle's Dockerfile sets both, so the isolated container
+keeps the full intake contract. A loaded document is at most 32
 MiB, and so is the state as `data/get` writes it back with the members a
 document may omit (`types`, `state_evidence_id`, record citations), so a
 reported state always loads again; an inline part also stays within the 4 MiB
@@ -1202,7 +1215,8 @@ live state when it serves from one: the derived initial state, or one
 validated document whose JSON was at most 32 MiB. Data-plane calls run one at a time, so
 at most one loaded document is being read and parsed at once; `data/get`
 serializes the held state whole. No process is launched and nothing is
-written to disk. No outbound network request is made unless a `data/add` call names an
+written to disk. No outbound network request is made unless the operator set
+`REA_ENVIRONMENT_STATE_HTTPS=enabled` and a `data/add` call names an
 `https://` uri, which is fetched once within the limits above; a `file://` uri
-is read once. A listener that fails after binding is logged and ends the command with
+inside `REA_ENVIRONMENT_STATE_ROOT` is read once. A listener that fails after binding is logged and ends the command with
 a `resource_constraint` error and exit `1` instead of serving nothing.

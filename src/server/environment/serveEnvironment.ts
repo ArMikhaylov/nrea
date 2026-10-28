@@ -439,6 +439,12 @@ export interface ServeEnvironmentOptions {
   readonly state?: EnvironmentState;
   /** Downloads https state documents for `data/add`; defaults to a redirect-refusing fetch. */
   readonly fetchState?: StateFetcher;
+  /** Canonical directory `data/add` may read `file://` documents from; omitted refuses them. */
+  readonly stateFileRoot?: string;
+  /** Whether `data/add` may fetch `https://` documents; omitted refuses them. */
+  readonly allowHttpsState?: boolean;
+  /** When set, every HTTP request must present `Authorization: Bearer <token>`. */
+  readonly bearerToken?: string;
 }
 
 /** A listening agent environment and the card it serves. */
@@ -484,6 +490,9 @@ export const serveEnvironment = async (
       ? {}
       : { allowedHosts: options.allowedHosts }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.bearerToken === undefined
+      ? {}
+      : { bearerToken: options.bearerToken }),
     createMcpServer: () => createEnvironmentMcpServer(name, tools, answer),
     routes: environmentRoutes(
       card,
@@ -493,6 +502,8 @@ export const serveEnvironment = async (
             store,
             {
               ...DEFAULT_STATE_INTAKE,
+              fileRoot: options.stateFileRoot,
+              allowHttps: options.allowHttpsState === true,
               ...(options.fetchState === undefined
                 ? {}
                 : { fetchState: options.fetchState }),

@@ -43,6 +43,9 @@ it("captures MCP process scenarios with the server's selected environment", asyn
     { kind: "session", session },
     { environment: { REA_CAPTURE_SELECTION_MARKER: "selected" } },
   );
+  // Opt in on the server, not in its environment: that environment is exactly
+  // what the captured process must inherit.
+  server.targetExecutionEnabled = true;
   const client = new Client({ name: "capture-environment", version: "1" });
   resources.push(client, server, session);
   const [clientTransport, serverTransport] =

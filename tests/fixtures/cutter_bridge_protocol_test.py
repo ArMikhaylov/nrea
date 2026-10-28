@@ -451,6 +451,15 @@ class ProtocolProducerTest(unittest.TestCase):
         self.server.join(timeout=2)
         self.assertFalse(socket_path.exists())
 
+    def test_unauthenticated_failures_answer_a_fixed_code_without_exception_text(self):
+        for payload in (b"{not json\n", b"\xff\xfe\n", b"[1, 2]\n"):
+            with _connect(self.server, timeout=2) as connection:
+                connection.sendall(payload)
+                response = json.loads(connection.makefile("rb").readline())
+            self.assertIn(response["error"], ("bad-request", "authentication-failed"))
+            self.assertEqual(set(response), {"ok", "error"})
+        self.assertEqual(self.dispatcher.commands, [])
+
     def test_oversized_hello_is_refused_before_the_command_budget(self):
         with _connect(self.server, timeout=2) as connection:
             # No LF: an uncapped reader would keep buffering toward MAX_FRAME_BYTES.

@@ -96,6 +96,7 @@ cliTest.for(["full", "compact"] as const)(
         HOME: home,
         REA_LOG_LEVEL: "silent",
         REA_MCP_INPUT_SCHEMA_PROFILE: profile,
+        REA_MCP_TARGET_EXECUTION: "enabled",
       },
       stderr: "pipe",
     });

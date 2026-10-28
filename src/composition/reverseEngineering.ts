@@ -31,7 +31,10 @@ export const createReverseEngineeringCommandPort = (
       environment,
       platform,
     ),
-    arguments: rizinCommand(input),
+    arguments: rizinCommand(
+      input,
+      environment.REA_RIZIN_SANDBOX !== "disabled",
+    ),
     identity: RIZIN_PROVIDER_IDENTITY,
   }),
 });

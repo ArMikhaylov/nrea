@@ -59,7 +59,7 @@ const boot = async (factories: OptionalObservationFactories) => {
   const exitCodes: number[] = [];
   expect(
     await run({
-      env: {},
+      env: { REA_MCP_TARGET_EXECUTION: "enabled" },
       loadOptionalProviders: async () => loaded,
       createServer: (source, options) => {
         if (source.kind !== "session")

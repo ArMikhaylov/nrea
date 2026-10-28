@@ -16,10 +16,13 @@ import { parseCliJsonInput } from "../cliJsonInput.js";
 import { logCliCommand } from "../cliLogging.js";
 import { parseEnvironmentName } from "../config/environmentName.js";
 import {
+  MCP_HTTP_TOKEN_SETTING,
   parseMcpHttpEndpoint,
   mcpHttpListenerPortSchema,
+  resolveMcpHttpBearerToken,
   type McpHttpEndpoint,
 } from "../config/mcpHttpEndpoint.js";
+import { resolveEnvironmentStateIntake } from "../config/environmentStateIntake.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import type { StreamableHttpListenError } from "../server/http/streamableHttpListenError.js";
@@ -171,6 +174,15 @@ const serveEnvironmentCommand = async (
   if (!endpoint.ok) return cliError(endpoint.error);
   const environmentName = parseEnvironmentName(environment);
   if (!environmentName.ok) return cliError(environmentName.error);
+  const intake = await resolveEnvironmentStateIntake(environment);
+  if (!intake.ok) return cliError(intake.error);
+  // AgentEnv clients may not send headers, so the token is opt-in here; an
+  // operator who sets it gets the same admission as `rea mcp --http`.
+  const bearer =
+    environment[MCP_HTTP_TOKEN_SETTING] === undefined
+      ? undefined
+      : resolveMcpHttpBearerToken(environment);
+  if (bearer !== undefined && !bearer.ok) return cliError(bearer.error);
   const inputs = await loadServeInputs(input, environmentName.value, signal);
   if (!inputs.ok) return inputs.error;
   const {
@@ -178,6 +190,11 @@ const serveEnvironmentCommand = async (
     served: { state, report },
   } = inputs.value;
   const commandLogger = infoLogger(environment, logger);
+  if (bearer === undefined)
+    commandLogger.warn(
+      { setting: MCP_HTTP_TOKEN_SETTING },
+      "Environment listener accepts unauthenticated requests; set REA_MCP_HTTP_TOKEN to require a bearer token",
+    );
   if (!report.served && report.reason === "unavailable")
     commandLogger.warn(
       { code: report.code, error: report.message },
@@ -208,6 +225,11 @@ const serveEnvironmentCommand = async (
         : { environmentName: environmentName.value }),
       logger: commandLogger,
       onerror: failListener,
+      ...(intake.value.stateFileRoot === undefined
+        ? {}
+        : { stateFileRoot: intake.value.stateFileRoot }),
+      allowHttpsState: intake.value.allowHttpsState,
+      ...(bearer === undefined ? {} : { bearerToken: bearer.value.token }),
     });
     if (!started.ok) return cliError(started.error);
     served = started.value;

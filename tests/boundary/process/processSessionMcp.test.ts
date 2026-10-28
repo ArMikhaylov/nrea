@@ -261,6 +261,8 @@ itWithCaptureCapability(
         },
       },
     );
+    // The server environment is what the captured process inherits.
+    server.targetExecutionEnabled = true;
     const client = new Client({ name: "process-mcp-env", version: "1" });
     resources.push(client, server, session);
     const [clientTransport, serverTransport] =

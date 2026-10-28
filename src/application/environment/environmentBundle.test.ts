@@ -121,6 +121,9 @@ describe("planEnvironmentBundle", () => {
     expect(lines).toContain(
       `ENV MCP_ALLOWED_HOSTS=127.0.0.1,localhost,grafana-example`,
     );
+    // The isolated container keeps the AgentEnv file:// and https:// intake contract.
+    expect(lines).toContain("ENV REA_ENVIRONMENT_STATE_ROOT=/");
+    expect(lines).toContain("ENV REA_ENVIRONMENT_STATE_HTTPS=enabled");
     expect(lines).toContain(
       "RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*",
     );
