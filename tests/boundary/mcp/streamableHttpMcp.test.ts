@@ -5,15 +5,23 @@ import {
 import { describe, expect, onTestFinished } from "vitest";
 
 import { advertisedMcpToolSchemas } from "../../fixtures/advertisedMcpTool.js";
-import { expectForeignHostRefused } from "../../support/http/rawRequest.js";
-import { startMcpHttpProcess } from "../../support/mcp/streamableHttpProcess.js";
+import {
+  expectForeignHostRefused,
+  rawHttpRequest,
+} from "../../support/http/rawRequest.js";
+import {
+  mcpHttpTestAuthorization,
+  startMcpHttpProcess,
+} from "../../support/mcp/streamableHttpProcess.js";
 import { processTest } from "../../support/process/processFixture.js";
 import { assertAdvertisedMcpContracts } from "./mcpContractHarness.js";
 
 const HTTP_BOUNDARY_TIMEOUT_MS = 90_000;
 
 const openSession = async (url: URL, name: string) => {
-  const transport = new StreamableHTTPClientTransport(url);
+  const transport = new StreamableHTTPClientTransport(url, {
+    requestInit: { headers: mcpHttpTestAuthorization },
+  });
   const client = new Client({ name, version: "1" });
   onTestFinished(() => client.close());
   await client.connect(transport);
@@ -85,6 +93,66 @@ describe("rea mcp --http", () => {
       const { url } = await startMcpHttpProcess(processes);
       const refused = await expectForeignHostRefused(url);
       expect(refused.body).not.toContain("127.0.0.1");
+    },
+    HTTP_BOUNDARY_TIMEOUT_MS,
+  );
+
+  processTest(
+    "refuses requests without the bearer token, including a wrong one",
+    async ({ processes }) => {
+      const { url } = await startMcpHttpProcess(processes);
+      const initialize = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "unauthenticated", version: "1" },
+        },
+      });
+      const headers = {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      };
+      for (const authorization of [
+        undefined,
+        "Bearer wrong-token-0123456789abcdefghijklmnop",
+        "Basic cmVhOnJlYQ==",
+      ]) {
+        const refused = await rawHttpRequest(url, {
+          method: "POST",
+          headers:
+            authorization === undefined
+              ? headers
+              : { ...headers, authorization },
+          body: initialize,
+        });
+        expect(refused.status).toBe(401);
+        expect(JSON.parse(refused.body)).toMatchObject({
+          jsonrpc: "2.0",
+          error: { code: -32001 },
+        });
+      }
+    },
+    HTTP_BOUNDARY_TIMEOUT_MS,
+  );
+
+  processTest(
+    "generates and announces a per-process token when none is pinned",
+    async ({ processes }) => {
+      const started = await startMcpHttpProcess(processes, [], {});
+      const announced = /Authorization: Bearer ([A-Za-z0-9_-]{43})/u.exec(
+        started.stderr(),
+      );
+      expect(announced?.[1]).toEqual(expect.any(String));
+      const refused = await rawHttpRequest(started.url);
+      expect(refused.status).toBe(401);
+      const admitted = await rawHttpRequest(started.url, {
+        headers: { authorization: `Bearer ${announced?.[1] ?? ""}` },
+      });
+      // Past authentication, the transport refuses a GET without an event-stream Accept.
+      expect(admitted.status).toBe(406);
     },
     HTTP_BOUNDARY_TIMEOUT_MS,
   );

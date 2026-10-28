@@ -763,11 +763,19 @@ as one JSON log line on stderr (`"msg":"MCP transport listening"` with `url`)
 at every `REA_LOG_LEVEL`, because an ephemeral port is otherwise unreachable;
 stdout stays unused.
 
-This endpoint uses plain HTTP without TLS or client authentication. Use it only
-within a trusted local or isolated environment; an explicit non-loopback bind
-makes the same tools and active analysis state reachable at that address. It
-does not provide separate users or independent target sessions. Standard client
-registrations continue to use a dedicated stdio process.
+Every request must carry `Authorization: Bearer <token>`; anything else is
+refused with `401` and `WWW-Authenticate: Bearer` before Host, session or route
+handling. Loopback is reachable by every local process and OS user, so the
+listener never serves without a token. Set `REA_MCP_HTTP_TOKEN` (32 to 512
+characters of `A-Z a-z 0-9 - . _ ~ + /`, optionally followed by `=`) to pin a
+token across restarts. When it is unset, REA generates a random token for this
+process and prints it once on stderr. REA removes `REA_MCP_HTTP_TOKEN` from its
+own environment after reading it, so providers it launches do not inherit it.
+The endpoint still uses plain HTTP without TLS: anyone who can observe the
+traffic can read the token. Use a non-loopback bind only within a trusted or
+isolated network. It does not provide separate users or independent target
+sessions. Standard client registrations continue to use a dedicated stdio
+process.
 
 The HTTP server is stateful and serves one client at a time on one server
 instance. `initialize` returns an `Mcp-Session-Id`; `notifications/initialized`

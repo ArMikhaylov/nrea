@@ -85,15 +85,24 @@ export const startListeningProcess = async (
   return { child, url, stderr: () => stderr };
 };
 
+/** The pinned bearer token `startMcpHttpProcess` gives its listener. */
+export const MCP_HTTP_TEST_TOKEN = "rea-boundary-test-token-0123456789abcdef";
+
+/** Headers that authenticate one request to a `startMcpHttpProcess` listener. */
+export const mcpHttpTestAuthorization = {
+  authorization: `Bearer ${MCP_HTTP_TEST_TOKEN}`,
+} as const;
+
 /** Spawn `rea mcp --http --port 0` and resolve once it names its URL. */
 export const startMcpHttpProcess = (
   processes: TestProcesses,
   arguments_: readonly string[] = [],
+  environment: Readonly<Record<string, string>> = {
+    REA_MCP_HTTP_TOKEN: MCP_HTTP_TEST_TOKEN,
+  },
 ): Promise<McpHttpProcess> =>
-  startListeningProcess(processes, [
-    "mcp",
-    "--http",
-    "--port",
-    "0",
-    ...arguments_,
-  ]);
+  startListeningProcess(
+    processes,
+    ["mcp", "--http", "--port", "0", ...arguments_],
+    environment,
+  );

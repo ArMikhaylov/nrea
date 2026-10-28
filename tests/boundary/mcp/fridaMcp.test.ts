@@ -360,6 +360,7 @@ it("advertises Frida MCP schemas and keeps remote credentials out of results", a
   const server = createServer(
     { kind: "session", session },
     {
+      environment: { ...process.env, REA_MCP_UNRESTRICTED_COMMANDS: "enabled" },
       fridaInstrumentation: createFridaTestProvider(),
     },
   );
@@ -610,7 +611,10 @@ it("retains cancellation Evidence after the MCP client stops waiting", async () 
   });
   const server = createServer(
     { kind: "session", session },
-    { fridaInstrumentation: provider },
+    {
+      environment: { ...process.env, REA_MCP_UNRESTRICTED_COMMANDS: "enabled" },
+      fridaInstrumentation: provider,
+    },
   );
   const client = new Client({ name: "frida-cancellation", version: "1" });
   const controller = new AbortController();

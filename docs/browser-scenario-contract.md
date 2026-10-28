@@ -684,7 +684,8 @@ retained bytes came from the original network transaction. Successful selected
 response bodies include this limitation in the capture. These bytes are not
 the compressed wire representation.
 Headers preserve producer order and duplicates. Authorization,
-Proxy-Authorization, Cookie, and Set-Cookie values are null with
+Proxy-Authorization, Cookie, Set-Cookie, X-Api-Key, Api-Key, X-Auth-Token,
+X-Access-Token, X-Amz-Security-Token and X-Goog-Api-Key values are null with
 `redacted: true`; ordinary values remain intact. Declared UTF-8 secret values
 and their standard URI/form or JSON-escaped representations are replaced without
 decoding unrelated binary bytes. Other encodings are not interpreted. Digests describe the

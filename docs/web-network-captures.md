@@ -1090,8 +1090,9 @@ zero. Ranges can start above zero or contain gaps. Packet headers, HTTP events,
 raw lengths and unknown extensions remain producer evidence rather than being
 normalized into invented HAR requests.
 
-The adapter excludes authorization/proxy authorization/cookie/set-cookie
-values in known HTTP frame events, reset tokens in transport parameters and
+The adapter excludes the shared credential header values (authorization,
+proxy authorization, cookie, set-cookie and the common API-key headers listed in
+the browser scenario contract) in known HTTP frame events, reset tokens in transport parameters and
 NEW_CONNECTION_ID frames, and NEW_TOKEN frame tokens. Known URL header userinfo
 and explicit sensitive values follow the shared exclusions. Ordinary extension
 fields and token-looking query text remain retained. Explicit declarations also

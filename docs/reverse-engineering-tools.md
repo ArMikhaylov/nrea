@@ -2,6 +2,21 @@
 
 REA can call caller-supplied GNU objdump, GDB, and Rizin installations. REA does not install or update these tools. Static objdump/Rizin workflows use the same services from CLI and MCP. GDB's persistent MCP sessions and ephemeral CLI command are available only on Linux. Persistent debugger sessions exist only for the lifetime of the REA MCP server process.
 
+## Unrestricted commands over MCP
+
+`execute_rizin_command`, `rizin_debug_command`, `cutter_command`,
+`gdb_console`, `load_frida_script` and `instrument_with_frida` pass free-form
+text to an engine that can run arbitrary code on the host: Rizin runs `!cmd`
+through the shell, GDB has `shell` and `python`, and Frida scripts run inside
+the target. An agent reads untrusted target content, so text planted in a
+binary, bundle or capture can steer it into such a call. Over MCP these tools
+therefore refuse with a configuration error until the operator sets
+`REA_MCP_UNRESTRICTED_COMMANDS=enabled` in the server registration.
+`disabled` or an unset value keeps them refused; any other value fails startup.
+The tools stay listed so the refusal names the setting. The equivalent CLI
+commands are typed by the operator and are not gated. Enable the setting only
+for targets you trust, or inside an isolated VM or container.
+
 In a shared MCP server, unrestricted Rizin and Cutter commands, GDB console
 commands, Rizin debugger start/close, and GDB debugger close retire any active
 binary analysis session after the operation. This prevents a fresh analysis
@@ -93,7 +108,12 @@ Captured stdout and stderr are retained up to a 16 MiB combined limit; `output_t
 
 ## Cutter bridge
 
-Cutter commands use the local REA Python bridge and authenticated loopback messages.
+Cutter commands use the local REA Python bridge and authenticated messages. On
+Linux and macOS the bridge listens on a Unix socket inside the private (`0700`)
+bridge directory, so other OS users cannot connect at all; its path must fit in
+103 bytes, so choose a short `REA_CUTTER_BRIDGE_DIR` if startup reports it is too
+long. Windows keeps an authenticated loopback TCP listener. The unauthenticated
+hello frame is limited to 1 KiB regardless of `REA_BRIDGE_MAX_REQUEST_BYTES`.
 Discovery reads the session descriptors that the plugin publishes in the bridge
 directory. Set `REA_CUTTER_BRIDGE_DIR` in both REA's environment and the environment
 that starts Cutter to select a custom directory. Both expand `~` and `~/` paths

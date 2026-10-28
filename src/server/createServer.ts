@@ -98,6 +98,10 @@ import type { BinaryLayoutService } from "../application/binaryDiagnostics/Binar
 import { EvidenceMcpServer } from "./EvidenceMcpServer.js";
 import { catalogIdentityForToolFamilies } from "../catalogIdentity.js";
 import { parseMcpToolFamilies } from "../config/mcpToolFamilies.js";
+import {
+  MCP_UNRESTRICTED_COMMANDS_SETTING,
+  parseMcpUnrestrictedCommands,
+} from "../config/mcpUnrestrictedCommands.js";
 import { createToolResultDelivery } from "./toolResult.js";
 import type { ToolResultDelivery } from "./ToolResultDelivery.js";
 import { parseMcpResponseBudget } from "../config/mcpResponseBudget.js";
@@ -523,6 +527,7 @@ export const createServer = (
       advertisedToolFamilies,
     );
   server.analysisSettings = analysisSettings;
+  server.unrestrictedCommandsEnabled = selectUnrestrictedCommands(environment);
   registerAnalysisSettingsTools(server, analysisSettings);
   if (options.mcpServer !== undefined) {
     server.attachRuntime(
@@ -1329,6 +1334,16 @@ const registerObservationTools = ({
     recordEvidenceWithUnknown,
     withAdmittedAnalysis,
   });
+};
+
+const selectUnrestrictedCommands = (
+  environment: Readonly<NodeJS.ProcessEnv>,
+): boolean => {
+  const configured = parseMcpUnrestrictedCommands(
+    environment[MCP_UNRESTRICTED_COMMANDS_SETTING],
+  );
+  if (!configured.ok) throw configured.error;
+  return configured.value;
 };
 
 const selectAdvertisedToolFamilies = (

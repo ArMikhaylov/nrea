@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import socket
+import stat
 import sys
 import tempfile
 import threading
@@ -205,6 +206,20 @@ class ServeDispatcher:
             if request.get("kind") == "command":
                 self.completed_commands[request["request_id"]] = "complete"
         request["_event"].set()
+
+
+def _connect(server, timeout):
+    """Reach the bridge over the transport its descriptor publishes."""
+    if server.socket_path is None:
+        return socket.create_connection(("127.0.0.1", server.port), timeout=timeout)
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        connection.connect(os.fspath(server.socket_path))
+    except OSError:
+        connection.close()
+        raise
+    return connection
 
 
 def run_serve_mode():
@@ -421,8 +436,31 @@ class HostVersionTest(unittest.TestCase):
 
 
 class ProtocolProducerTest(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Windows bridges keep loopback TCP")
+    def test_posix_bridge_listens_only_on_a_private_unix_socket(self):
+        descriptor = json.loads(self.server.descriptor.read_text(encoding="utf-8"))
+        self.assertNotIn("host", descriptor)
+        self.assertNotIn("port", descriptor)
+        socket_path = Path(descriptor["socket_path"])
+        self.assertEqual(socket_path.parent, Path(self.temp.name))
+        info = os.lstat(socket_path)
+        self.assertTrue(stat.S_ISSOCK(info.st_mode))
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(self.temp.name).st_mode), 0o700)
+        self.server.stop()
+        self.server.join(timeout=2)
+        self.assertFalse(socket_path.exists())
+
+    def test_oversized_hello_is_refused_before_the_command_budget(self):
+        with _connect(self.server, timeout=2) as connection:
+            # No LF: an uncapped reader would keep buffering toward MAX_FRAME_BYTES.
+            connection.sendall(b"{" + b" " * (bridge.HELLO_FRAME_MAX_BYTES + 16))
+            response = connection.makefile("rb").readline()
+        self.assertIn(b"frame-limit-exceeded", response)
+        self.assertEqual(self.dispatcher.commands, [])
+
     def test_stalled_hello_does_not_block_the_next_client(self):
-        stalled = socket.create_connection(("127.0.0.1", self.server.port), timeout=2)
+        stalled = _connect(self.server, timeout=2)
         try:
             _send(stalled, {"kind": "rea-auth-v2", "nonce": "b" * 64})
             challenge = _frame(stalled)
@@ -439,7 +477,7 @@ class ProtocolProducerTest(unittest.TestCase):
             stalled.close()
 
     def test_status_does_not_complete_an_earlier_connection_still_reading(self):
-        earlier = socket.create_connection(("127.0.0.1", self.server.port), timeout=2)
+        earlier = _connect(self.server, timeout=2)
         try:
             _send(earlier, {"kind": "rea-auth-v2", "nonce": "c" * 64})
             challenge = _frame(earlier)
@@ -468,11 +506,11 @@ class ProtocolProducerTest(unittest.TestCase):
     def test_worker_admission_is_bounded_and_keeps_listening(self):
         previous = bridge.MAX_CONNECTION_WORKERS
         bridge.MAX_CONNECTION_WORKERS = 1
-        stalled = socket.create_connection(("127.0.0.1", self.server.port), timeout=2)
+        stalled = _connect(self.server, timeout=2)
         try:
             _send(stalled, {"kind": "rea-auth-v2", "nonce": "d" * 64})
             self.assertEqual(_frame(stalled)["session_id"], self.server.session_id)
-            rejected = socket.create_connection(("127.0.0.1", self.server.port), timeout=2)
+            rejected = _connect(self.server, timeout=2)
             try:
                 rejected.settimeout(1)
                 try:
@@ -509,7 +547,7 @@ class ProtocolProducerTest(unittest.TestCase):
             return original(thread)
 
         with patch.object(threading.Thread, "start", start):
-            rejected = socket.create_connection(("127.0.0.1", self.server.port), timeout=2)
+            rejected = _connect(self.server, timeout=2)
             try:
                 rejected.settimeout(1)
                 try:
@@ -528,7 +566,7 @@ class ProtocolProducerTest(unittest.TestCase):
         self.assertEqual(response["completed_connection"], "0000000000000001")
 
     def test_rejects_legacy_peers_before_ui_dispatch(self):
-        with socket.create_connection(("127.0.0.1", self.server.port), timeout=2) as connection:
+        with _connect(self.server, timeout=2) as connection:
             connection.sendall((json.dumps({"kind": "rea-auth-v1", "nonce": "a" * 64}) + "\n").encode())
             with connection.makefile("rb") as reader:
                 reply = json.loads(reader.readline())
@@ -556,7 +594,7 @@ class ProtocolProducerTest(unittest.TestCase):
     def exchange(self, request):
         token = self.server.token.encode()
         client_nonce = os.urandom(32).hex()
-        with socket.create_connection(("127.0.0.1", self.server.port), timeout=1) as connection:
+        with _connect(self.server, timeout=1) as connection:
             _send(connection, {"kind": "rea-auth-v2", "nonce": client_nonce})
             challenge = _frame(connection)
             self.assertEqual(challenge["session_id"], self.server.session_id)
@@ -582,7 +620,7 @@ class ProtocolProducerTest(unittest.TestCase):
 
     def test_client_chosen_session_uuid_without_secret_proof_is_not_authenticated(self):
         client_nonce = os.urandom(32).hex()
-        with socket.create_connection(("127.0.0.1", self.server.port), timeout=1) as connection:
+        with _connect(self.server, timeout=1) as connection:
             _send(connection, {"kind": "rea-auth-v2", "nonce": client_nonce})
             _frame(connection)
             request_bytes = json.dumps({"kind": "status", "session_id": "client-chosen-session"}, separators=(",", ":"))

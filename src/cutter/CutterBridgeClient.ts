@@ -25,9 +25,9 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
-import { createConnection } from "node:net";
+import { createConnection, type Socket } from "node:net";
 import { lstat, opendir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
 import { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -53,13 +53,24 @@ import {
   type BridgeMaxRequestBytes,
 } from "../config/bridgeMaxRequestBytes.js";
 
-const descriptorSchema = z.object({
-  ...cutterSessionSchema.shape,
-  host: z.literal("127.0.0.1"),
-  port: z.int().min(1).max(65535),
-  token: z.string().min(20),
-  max_request_bytes: z.int().positive().optional(),
-});
+// POSIX bridges listen on a Unix socket inside the private bridge directory,
+// so only the owning OS user can connect. Windows bridges keep loopback TCP.
+const descriptorSchema = z
+  .object({
+    ...cutterSessionSchema.shape,
+    host: z.literal("127.0.0.1").optional(),
+    port: z.int().min(1).max(65535).optional(),
+    socket_path: z.string().min(1).optional(),
+    token: z.string().min(20),
+    max_request_bytes: z.int().positive().optional(),
+  })
+  .refine(
+    ({ host, port, socket_path }) =>
+      socket_path === undefined
+        ? host !== undefined && port !== undefined
+        : host === undefined && port === undefined,
+    "A Cutter descriptor names exactly one transport",
+  );
 
 export const CUTTER_PROVIDER_IDENTITY = {
   id: "cutter.python-plugin",
@@ -954,6 +965,18 @@ export class CutterBridgeClient {
     };
   }
 
+  /** Open the descriptor's transport; a socket must live in the bridge directory. */
+  #connect(descriptor: z.infer<typeof descriptorSchema>): Socket {
+    if (descriptor.socket_path === undefined)
+      return createConnection({
+        host: descriptor.host ?? "127.0.0.1",
+        port: descriptor.port ?? 0,
+      });
+    if (dirname(resolve(descriptor.socket_path)) !== resolve(this.#directory))
+      throw new Error("Cutter bridge socket is outside the bridge directory");
+    return createConnection({ path: descriptor.socket_path });
+  }
+
   /**
    * Hello only. A matching server proof means this descriptor is a live
    * authenticated bridge. The socket closes before any status or command.
@@ -964,10 +987,7 @@ export class CutterBridgeClient {
   ): Promise<boolean> {
     assertBridgeActive(signal, "list_cutter_sessions");
     return new Promise((resolve, reject) => {
-      const connection = createConnection({
-        host: descriptor.host,
-        port: descriptor.port,
-      });
+      const connection = this.#connect(descriptor);
       const frames = new CutterBridgeResponseFrames(this.#maxRequestBytes);
       let settled = false;
       const settle = (
@@ -1039,10 +1059,7 @@ export class CutterBridgeClient {
     onAuthenticated?: (connectionOrdinal: string) => void,
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const connection = createConnection({
-        host: descriptor.host,
-        port: descriptor.port,
-      });
+      const connection = this.#connect(descriptor);
       const frames = new CutterBridgeResponseFrames(this.#maxRequestBytes);
       let completion: (() => void) | undefined;
       let requestSent = false;

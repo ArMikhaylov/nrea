@@ -159,6 +159,11 @@ def _frame_limit_exceeded():
 
 SOCKET_TIMEOUT_SECONDS = 20
 AUTH_FRAME_TIMEOUT_SECONDS = 1
+# The unauthenticated hello is a kind and a 64-hex nonce; it never needs the
+# command budget, so an unauthenticated peer cannot make the bridge buffer it.
+HELLO_FRAME_MAX_BYTES = 1024
+# sockaddr_un.sun_path is 104 bytes on macOS and 108 on Linux, NUL included.
+MAX_UNIX_SOCKET_PATH_BYTES = 103
 # The client request deadline. The authenticated frame read may use up to
 # this long; it does not grow past it when the byte ceiling is raised.
 REQUEST_DEADLINE_SECONDS = 25
@@ -613,13 +618,11 @@ class _BridgeServer(threading.Thread):
     def __init__(self, dispatcher: _RequestDispatcher) -> None:
         super().__init__(name="rea-cutter-bridge", daemon=True)
         self.dispatcher = dispatcher
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server.bind(("127.0.0.1", 0))
-        self.server.listen(8)
-        self.server.settimeout(0.5)
-        self.port = self.server.getsockname()[1]
         self.session_id = str(uuid.uuid4())
+        self.stopping = False
+        self.server: socket.socket | None = None
+        self.port: int | None = None
+        self.socket_path: Path | None = None
         self.token = secrets.token_urlsafe(32)
         self.poisoned = False
         self.connection_ordinal = 0
@@ -636,19 +639,52 @@ class _BridgeServer(threading.Thread):
         self._finished_ordinals: set[int] = set()
         self.directory = _bridge_directory()
         self.descriptor = self.directory / f"cutter-{os.getpid()}-{self.session_id}.json"
+        if os.name == "nt":
+            # Windows keeps loopback TCP; the token and HMAC authenticate peers.
+            self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server.bind(("127.0.0.1", 0))
+            self.server.listen(8)
+            self.server.settimeout(0.5)
+            self.port = self.server.getsockname()[1]
+
+    def _listen_unix(self) -> None:
+        """Listen inside the verified 0700 directory so other OS users cannot connect."""
+        path = self.directory / f"cutter-{os.getpid()}-{self.session_id}.sock"
+        if len(os.fsencode(path)) > MAX_UNIX_SOCKET_PATH_BYTES:
+            raise RuntimeError(
+                "Cutter bridge socket path is too long; set REA_CUTTER_BRIDGE_DIR to a shorter directory"
+            )
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # The 0700 parent already excludes other users. umask is process-wide
+        # in Cutter, so it is not changed around bind; chmod narrows afterwards.
+        try:
+            server.bind(os.fspath(path))
+        except OSError:
+            server.close()
+            raise
+        self.socket_path = path
+        os.chmod(path, 0o600)
+        server.listen(8)
+        server.settimeout(0.5)
+        self.server = server
 
     def publish(self) -> None:
         if os.name == "nt":
             _ensure_windows_bridge_directory(self.directory)
         else:
             _ensure_posix_bridge_directory(self.directory)
+            self._listen_unix()
         if os.name == "nt" and (self.directory.is_symlink() or not self.directory.is_dir()):
             raise RuntimeError("Cutter bridge directory must be a real directory")
+        transport = (
+            {"host": "127.0.0.1", "port": self.port}
+            if self.socket_path is None
+            else {"socket_path": os.fspath(self.socket_path)}
+        )
         payload = {
             "session_id": self.session_id,
             "pid": os.getpid(),
-            "host": "127.0.0.1",
-            "port": self.port,
+            **transport,
             "token": self.token,
             "document_generation": self.dispatcher.generation,
             "current_file": self.dispatcher.current_file,
@@ -685,13 +721,16 @@ class _BridgeServer(threading.Thread):
         try:
             self.publish()
         except Exception:
-            self.server.close()
+            self._close_listener()
+            return
+        server = self.server
+        if server is None:
             return
         while True:
             try:
-                connection, _ = self.server.accept()
+                connection, _ = server.accept()
             except socket.timeout:
-                if getattr(self, "stopping", False):
+                if self.stopping:
                     break
                 continue
             except OSError:
@@ -728,11 +767,20 @@ class _BridgeServer(threading.Thread):
             workers = list(self._workers)
         for worker in workers:
             worker.join(timeout=1)
-        self.server.close()
+        self._close_listener()
         try:
             self.descriptor.unlink(missing_ok=True)
         except OSError:
             pass
+
+    def _close_listener(self) -> None:
+        if self.server is not None:
+            _close_socket(self.server)
+        if self.socket_path is not None:
+            try:
+                self.socket_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _serve_connection(self, connection: socket.socket, connection_ordinal: int) -> None:
         try:
@@ -740,7 +788,9 @@ class _BridgeServer(threading.Thread):
                 connection.settimeout(AUTH_FRAME_TIMEOUT_SECONDS)
                 authenticated = False
                 try:
-                    hello = self._receive_frame(connection)
+                    hello = self._receive_frame(
+                        connection, AUTH_FRAME_TIMEOUT_SECONDS, HELLO_FRAME_MAX_BYTES
+                    )
                     if not isinstance(hello, dict) or hello.get("kind") != "rea-auth-v2" or not isinstance(hello.get("nonce"), str) or len(hello["nonce"]) != 64:
                         self._send(connection, {"ok": False, "error": "authentication-failed"})
                         return
@@ -848,20 +898,22 @@ class _BridgeServer(threading.Thread):
     def _receive_frame(
         connection: socket.socket,
         timeout_seconds: float = AUTH_FRAME_TIMEOUT_SECONDS,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
+        limit = MAX_FRAME_BYTES if max_bytes is None else max_bytes
         data = bytearray()
         deadline = time.monotonic() + timeout_seconds
         newline = -1
         while newline < 0:
-            if len(data) > MAX_FRAME_BYTES:
+            if len(data) > limit:
                 raise _frame_limit_exceeded()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise socket.timeout("authentication frame timed out")
             connection.settimeout(remaining)
-            # MAX_FRAME_BYTES limits the JSON payload; the terminating LF is
+            # The limit covers the JSON payload; the terminating LF is
             # framing and may be the one byte beyond that payload budget.
-            part = connection.recv(min(65536, MAX_FRAME_BYTES + 1 - len(data)))
+            part = connection.recv(min(65536, limit + 1 - len(data)))
             if not part:
                 raise ValueError("incomplete authentication frame")
             scanned = len(data)
@@ -869,7 +921,7 @@ class _BridgeServer(threading.Thread):
             # The delimiter is one byte, so it cannot straddle a chunk.
             # Search only the bytes just received.
             newline = data.find(b"\n", scanned)
-        if newline > MAX_FRAME_BYTES:
+        if newline > limit:
             raise _frame_limit_exceeded()
         if newline != len(data) - 1:
             raise ValueError("invalid framed request")
@@ -1084,10 +1136,8 @@ class _BridgeServer(threading.Thread):
 
     def stop(self) -> None:
         self.stopping = True
-        try:
-            self.server.close()
-        except OSError:
-            pass
+        if self.server is not None:
+            _close_socket(self.server)
         with self._connections_lock:
             connections = list(self._connections)
         for connection in connections:

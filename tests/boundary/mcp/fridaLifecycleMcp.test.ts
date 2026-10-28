@@ -218,7 +218,10 @@ const connectedFixture = async () => {
   });
   const server = createServer(
     { kind: "session", session },
-    { fridaInstrumentation: manager },
+    {
+      environment: { ...process.env, REA_MCP_UNRESTRICTED_COMMANDS: "enabled" },
+      fridaInstrumentation: manager,
+    },
   );
   const client = new Client({ name: "frida-lifecycle", version: "1" });
   onTestFinished(async () => {
@@ -751,6 +754,7 @@ const callPartialFridaLoadError = async (
     recordEvidence,
     delivery,
   );
+  server.unrestrictedCommandsEnabled = true;
   registerFridaTools(server, provider, silentLogger, delivery, recordEvidence);
   const client = new Client({
     name: "frida-partial-probe-client",

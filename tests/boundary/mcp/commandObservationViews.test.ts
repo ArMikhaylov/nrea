@@ -68,6 +68,7 @@ const connect = async (retain = true) => {
     retain ? record : undefined,
     delivery,
   );
+  server.unrestrictedCommandsEnabled = true;
   const execute = vi.fn(async () =>
     ok({ result: capture, evidence: gdbEvidence() }),
   );

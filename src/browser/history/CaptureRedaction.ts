@@ -4,11 +4,19 @@ import { parseRecordedTransportUrl } from "../../domain/recordedTransportUrl.js"
 
 type Redaction = WebNetworkCaptureRecord["redactions"][number];
 type TransportUrlContext = { readonly credentialBaseUrl?: string };
+// Standard credential carriers plus widely deployed API-key headers. Keep in
+// sync with CREDENTIALS in bridge/mitmproxy/capture.py.
 const CREDENTIAL_HEADERS = new Set([
   "authorization",
   "proxy-authorization",
   "cookie",
   "set-cookie",
+  "x-api-key",
+  "api-key",
+  "x-auth-token",
+  "x-access-token",
+  "x-amz-security-token",
+  "x-goog-api-key",
 ]);
 /** HTTP credential names apply equally to recorded headers and gRPC-web trailers. */
 export const isCaptureCredentialHeader = (name: string): boolean =>

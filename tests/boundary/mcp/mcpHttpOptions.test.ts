@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseMcpHttpEndpoint,
   mcpAllowedHostsTextSchema,
+  resolveMcpHttpBearerToken,
 } from "../../../src/config/mcpHttpEndpoint.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { runMcpHttpEntrypoint } from "../../../src/main.js";
@@ -93,6 +94,38 @@ describe("MCP_HOST and MCP_PORT", () => {
       ok: true,
       value: { host: "127.0.0.1", port: 0 },
     });
+  });
+
+  it("pins a valid REA_MCP_HTTP_TOKEN and generates one otherwise", () => {
+    const pinned = "A".repeat(32);
+    expect(resolveMcpHttpBearerToken({ REA_MCP_HTTP_TOKEN: pinned })).toEqual({
+      ok: true,
+      value: { token: pinned, source: "setting" },
+    });
+    expect(resolveMcpHttpBearerToken({}, () => "generated")).toEqual({
+      ok: true,
+      value: { token: "generated", source: "generated" },
+    });
+    const generated = resolveMcpHttpBearerToken({});
+    expect(generated.ok && generated.value.token).toMatch(
+      /^[A-Za-z0-9_-]{43}$/u,
+    );
+  });
+
+  it("rejects a short or malformed token without echoing it", () => {
+    for (const token of [
+      "short",
+      "",
+      `${"A".repeat(40)} space`,
+      "é".repeat(40),
+    ]) {
+      const resolved = resolveMcpHttpBearerToken({ REA_MCP_HTTP_TOKEN: token });
+      expect(resolved.ok).toBe(false);
+      if (resolved.ok) continue;
+      const message = projectAnalysisError(resolved.error).message;
+      expect(message).toContain("REA_MCP_HTTP_TOKEN");
+      if (token.length > 0) expect(message).not.toContain(token);
+    }
   });
 
   it("reads the environment snapshot and lets explicit values win", () => {

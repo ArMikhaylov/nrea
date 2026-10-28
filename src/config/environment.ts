@@ -37,6 +37,7 @@ import {
   mcpToolsListBudgetMsSchema,
 } from "./mcpStartupBudgets.js";
 import { mcpToolFamiliesSchema } from "./mcpToolFamilies.js";
+import { mcpUnrestrictedCommandsSchema } from "./mcpUnrestrictedCommands.js";
 import { parseLoaderArgs, parseStringArray } from "./parsers.js";
 import { processStartConfigurationSchema } from "./processStart.js";
 import { parseJebMcpEndpoint } from "./jebMcpEndpoint.js";
@@ -56,6 +57,7 @@ const environmentSchema = z.object({
   REA_MCP_DOCTOR_DEADLINE_MS: mcpDoctorDeadlineMsSchema.optional(),
   REA_MCP_INPUT_SCHEMA_PROFILE: mcpInputSchemaProfileSchema.optional(),
   REA_MCP_TOOL_FAMILIES: mcpToolFamiliesSchema.optional(),
+  REA_MCP_UNRESTRICTED_COMMANDS: mcpUnrestrictedCommandsSchema.optional(),
   REA_MCP_OUTPUT_SCHEMA_PROFILE: mcpOutputSchemaProfileSchema.optional(),
   REA_IDA_MCP_CONFIG: z
     .string()

@@ -149,6 +149,36 @@ it.each(NAMES.filter((name) => name.includes("\\")))(
 );
 
 it.each([
+  "CON",
+  "nul.txt",
+  "dir/Aux",
+  "com1.log",
+  "LPT9",
+  "trailing.",
+  "space ",
+  "dir./file",
+])(
+  "rejects Windows device names and trailing dots or spaces before materializing %j",
+  async (name) => {
+    const root = await createTestTempDirectory("rea-windows-device-output-");
+    const output = join(root, "output");
+    const tree = await SafeOutputTree.create(output, "win32");
+    const stream = Readable.from(CONTENT);
+    try {
+      await expect(
+        tree.write(name, stream, { sha256: DIGEST, bytes: CONTENT.length }),
+      ).rejects.toMatchObject({
+        reason: "path",
+        message: expect.stringContaining("reserved device name"),
+      });
+      expect(await readdir(output)).toEqual([]);
+    } finally {
+      expect(await tree.rollback()).toMatchObject({ status: "complete" });
+    }
+  },
+);
+
+it.each([
   "../outside",
   "safe/../outside",
   "/outside",

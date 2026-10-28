@@ -51,6 +51,10 @@ import {
 } from "./ToolResultDelivery.js";
 import { toolReturnsTargetContent } from "../contracts/toolEffects.js";
 import {
+  UNRESTRICTED_COMMAND_TOOLS,
+  unrestrictedCommandRefusal,
+} from "../config/mcpUnrestrictedCommands.js";
+import {
   carriesTargetContentMarker,
   encodeToolResult,
   measureMcpResultWithinBudget,
@@ -189,6 +193,8 @@ export interface StandardToolRegistration {
 /** Bind oversized MCP error recovery to this server's Evidence ledger. */
 export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
   analysisSettings: AnalysisSettings | undefined;
+  /** Operator opt-in for UNRESTRICTED_COMMAND_TOOLS; refused until set. */
+  unrestrictedCommandsEnabled = false;
   private identity: ReturnType<typeof createCatalogIdentity> | undefined;
 
   /** Composition supplies identity without importing the canonical schema graph. */
@@ -292,10 +298,17 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
         : undefined;
     const registeredConfig =
       inputSchema === undefined ? config : { ...config, inputSchema };
-    const scoped = (input: never, context: never) =>
-      this.analysisSettings === undefined
+    const gated = UNRESTRICTED_COMMAND_TOOLS.has(name);
+    const scoped = (input: never, context: never) => {
+      if (gated && !this.unrestrictedCommandsEnabled)
+        return this.delivery.toErrorToolResult(
+          unrestrictedCommandRefusal(name),
+          false,
+        );
+      return this.analysisSettings === undefined
         ? callback(input, context)
         : this.analysisSettings.run(() => callback(input, context));
+    };
     const registered = this.bindTool(
       name,
       registeredConfig as never,
