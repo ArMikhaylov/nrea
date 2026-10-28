@@ -49,7 +49,11 @@ it("uses the server-selected environment unless a provider environment overrides
       const server = createServer(
         { kind: "fixed", analysis },
         {
-          environment: { ...process.env, PATH: scenario.environment },
+          environment: {
+            ...process.env,
+            PATH: scenario.environment,
+            REA_MCP_UNRESTRICTED_COMMANDS: "enabled",
+          },
           ...(scenario.provider === undefined
             ? {}
             : {

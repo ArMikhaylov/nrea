@@ -166,4 +166,30 @@ non-loopback bind без TLS.
 
 ## 3. Результаты тестов
 
-(заполняется после прогона)
+Окружение: Linux x64, Node.js 24.22.1, Python 3.13. Всё запускалось локально
+(`npm run test:focused`), CI форка не запускался.
+
+| Набор | Результат |
+|---|---|
+| `tsc --noEmit` (весь проект) | без ошибок |
+| `npm run docs:check` | пройден |
+| Гейт + MCP-тесты тулов Rizin/GDB/Cutter/Frida + HTTP-транспорт (`rea mcp --http` как процесс) — 19 файлов | 176/176 после правки тестов (см. ниже) |
+| Cutter: TS-клиент и реальный Python-мост в serve-режиме — 14 файлов | 223/223 |
+| `tests/fixtures/cutter_bridge_protocol_test.py` | 33/33 |
+| Захват трафика (HAR, SAZ, qlog, protobuf, Playwright, редактирование) — 16 файлов | 353 passed, 3 skipped |
+| Сборка RL-окружений + snapshot replay — 4 файла | 55 passed, 1 skipped |
+| `npm audit` (prod + dev) | 0 уязвимостей |
+
+Существующие тесты, которые вызывают закрытые тулы через MCP, теперь явно
+включают `REA_MCP_UNRESTRICTED_COMMANDS=enabled` (через `environment` у
+`createServer` или `server.unrestrictedCommandsEnabled = true`). Сам отказ по
+умолчанию проверяет `tests/boundary/mcp/unrestrictedCommandsGate.test.ts`.
+
+Не запускалось:
+- полный набор (`npm run check:pr`): 855k строк тестов, много часов на 4 ядрах;
+- `bridge/mitmproxy/test_capture.py`: в окружении нет закреплённого mitmproxy 12.2.3;
+- реальный Cutter/Hopper/IDA, Windows-ветки (named pipe/TCP-мост Cutter, проверка
+  имён устройств — только через симуляцию `platform = "win32"`).
+
+`ruff` по `bridge/`: 611 → 614 замечаний (+3 — длинные строки и
+magic-number в новых тестах), новых F/B/E9 нет.
