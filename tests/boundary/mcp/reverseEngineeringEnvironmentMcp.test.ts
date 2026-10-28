@@ -25,7 +25,10 @@ const connectProviderClient = (options: {
     directory: options.directory,
     clientName: options.clientName,
     serverOptions: {
-      environment: { REA_RIZIN_COMMAND: options.configuredProvider },
+      environment: {
+        REA_RIZIN_COMMAND: options.configuredProvider,
+        REA_MCP_UNRESTRICTED_COMMANDS: "enabled",
+      },
       ...(options.providerEnvironment === undefined
         ? {}
         : { providerEnvironment: options.providerEnvironment }),

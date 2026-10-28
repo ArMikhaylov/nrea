@@ -209,6 +209,7 @@ it("preserves live Cutter command Evidence and parity through the MCP boundary",
     { kind: "session", session },
     {
       logger: silentLogger,
+      environment: { ...process.env, REA_MCP_UNRESTRICTED_COMMANDS: "enabled" },
       providerEnvironment: { ...process.env, REA_CUTTER_BRIDGE_DIR: directory },
     },
   );

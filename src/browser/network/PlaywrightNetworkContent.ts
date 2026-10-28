@@ -22,6 +22,7 @@ import type {
   ScenarioRedactionScope,
 } from "../BrowserScenarioSecrets.js";
 import { withPlaywrightExecutionBoundary } from "../PlaywrightExecutionBoundary.js";
+import { isCaptureCredentialHeader } from "../history/CaptureRedaction.js";
 
 /** The producer seam for ordered, duplicate-preserving HTTP headers. */
 export interface NetworkHeadersSource {
@@ -52,13 +53,6 @@ export type NetworkBodyPreflight = (input: {
   readonly allocationBytes: number;
   readonly mediaType: string | undefined;
 }) => BrowserScenarioEventAdmission | Promise<BrowserScenarioEventAdmission>;
-
-const credentialHeaders = new Set([
-  "authorization",
-  "proxy-authorization",
-  "cookie",
-  "set-cookie",
-]);
 
 const errorMessage = (
   cause: unknown,
@@ -94,7 +88,7 @@ export const captureNetworkHeaders = async (
       { state: "captured" }
     >["items"] = [];
     for (const { name, value } of headers) {
-      const credential = credentialHeaders.has(name.toLowerCase());
+      const credential = isCaptureCredentialHeader(name);
       cost +=
         secrets.redactionAllocationCost(
           name.length + (credential ? 0 : value.length),

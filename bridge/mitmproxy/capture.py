@@ -19,7 +19,12 @@ from mitmproxy.io import tnetstring
 
 PROFILE = "12.2.3"
 OUTPUT_BYTES = 96 * 1024 * 1024
-CREDENTIALS = {b"authorization", b"proxy-authorization", b"cookie", b"set-cookie"}
+# Keep in sync with CREDENTIAL_HEADERS in src/browser/history/CaptureRedaction.ts.
+CREDENTIALS = {
+    b"authorization", b"proxy-authorization", b"cookie", b"set-cookie",
+    b"x-api-key", b"api-key", b"x-auth-token", b"x-access-token",
+    b"x-amz-security-token", b"x-goog-api-key",
+}
 
 
 class CaptureFailure(Exception):

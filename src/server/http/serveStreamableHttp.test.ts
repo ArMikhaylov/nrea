@@ -289,6 +289,48 @@ it("serves plain routes beside the MCP endpoint and answers unknown paths with 4
   expect(wrongMethod.status).toBe(404);
 });
 
+it("requires the configured bearer token on the MCP endpoint and on routes", async () => {
+  const token = "unit-test-token-0123456789abcdefghijklmn";
+  const { served } = await start({
+    bearerToken: token,
+    routes: [
+      {
+        method: "GET",
+        path: "/.well-known/probe",
+        handle: () => Response.json({ probe: true }),
+      },
+    ],
+  });
+  for (const authorization of [
+    undefined,
+    `Bearer ${token}x`,
+    `Bearer ${token.slice(0, -1)}`,
+    `Basic ${token}`,
+  ]) {
+    const refused = await fetch(new URL("/.well-known/probe", served.url), {
+      headers: authorization === undefined ? {} : { authorization },
+    });
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get("www-authenticate")).toMatch(/^Bearer /u);
+  }
+  const admitted = await fetch(new URL("/.well-known/probe", served.url), {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  await expect(admitted.json()).resolves.toEqual({ probe: true });
+  const client = new Client({ name: "bearer", version: "1" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(served.url), {
+      requestInit: { headers: { authorization: `bearer ${token}` } },
+    }),
+  );
+  const echoed = await client.callTool({
+    name: "echo",
+    arguments: { text: "authenticated" },
+  });
+  expect(echoed.content).toEqual([{ type: "text", text: "authenticated" }]);
+  await client.close();
+});
+
 it("refuses foreign Host headers on a loopback bind and frees the port on close", async () => {
   const { served } = await start();
   const url = new URL(served.url);

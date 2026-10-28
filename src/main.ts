@@ -23,7 +23,9 @@ import {
   type SignalLatch,
 } from "./main/processShutdown.js";
 import {
+  MCP_HTTP_TOKEN_SETTING,
   parseMcpHttpEndpoint,
+  resolveMcpHttpBearerToken,
   type McpHttpEndpoint,
 } from "./config/mcpHttpEndpoint.js";
 
@@ -40,7 +42,7 @@ const runtimeDependencies = (): RuntimeDependencies => ({
 
 /** Replace stdio with the streamable HTTP listener; signals alone end it, never stdin. */
 const httpRuntimeDependencies = (
-  endpoint: McpHttpEndpoint,
+  endpoint: McpHttpEndpoint & { readonly bearerToken: string },
   latch: SignalLatch,
   exit: ExitStatus,
 ): RuntimeDependencies => {
@@ -172,7 +174,8 @@ export const runMcpHttpEntrypoint = async (
     io.setExitCode(1);
     return;
   }
-  const endpoint = parseMcpHttpEndpoint(snapshotEnvironment(process.env), {
+  const environment = snapshotEnvironment(process.env);
+  const endpoint = parseMcpHttpEndpoint(environment, {
     ...(parsed.host === undefined ? {} : { host: parsed.host }),
     ...(parsed.port === undefined ? {} : { port: parsed.port }),
     ...(parsed.allowedHosts === undefined
@@ -184,12 +187,25 @@ export const runMcpHttpEntrypoint = async (
     io.setExitCode(1);
     return;
   }
+  const bearer = resolveMcpHttpBearerToken(environment);
+  if (!bearer.ok) {
+    io.writeStderr(`${projectAnalysisError(bearer.error).message}\n`);
+    io.setExitCode(1);
+    return;
+  }
+  if (bearer.value.source === "generated")
+    io.writeStderr(
+      `MCP HTTP requests require "Authorization: Bearer ${bearer.value.token}". This token lasts for this process only; set ${MCP_HTTP_TOKEN_SETTING} to pin one.\n`,
+    );
+  // Providers inherit process.env; the transport credential is not theirs.
+  Reflect.deleteProperty(process.env, MCP_HTTP_TOKEN_SETTING);
+  const authenticated = { ...endpoint.value, bearerToken: bearer.value.token };
   // Latched before any asynchronous startup so a signal cannot end the process without cleanup.
   const latch = latchSignalShutdown();
   const exit = createExitStatus(io.setExitCode);
   try {
     await runEntrypoint(
-      () => run(httpRuntimeDependencies(endpoint.value, latch, exit)),
+      () => run(httpRuntimeDependencies(authenticated, latch, exit)),
       io.writeStderr,
       exit.set,
     );

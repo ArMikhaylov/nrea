@@ -722,6 +722,10 @@ const writeAll = async (
   }
 };
 
+// CreateFile opens these as devices in any directory, with or without an extension.
+const WINDOWS_DEVICE_NAME =
+  /^(?:con|prn|aux|nul|conin\$|conout\$|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])(?:\..*)?$/iu;
+
 const normalizeDestinationPath = (
   relativePath: string,
   platform: NodeJS.Platform,
@@ -742,6 +746,16 @@ const normalizeDestinationPath = (
       "path",
       `Windows destination cannot materialize artifact path: ${JSON.stringify(path)}; Windows names cannot contain U+0001-U+001F.`,
     );
+  if (platform === "win32") {
+    const segment = path
+      .split("/")
+      .find((name) => WINDOWS_DEVICE_NAME.test(name) || /[. ]$/u.test(name));
+    if (segment !== undefined)
+      throw new ArtifactReaderFailure(
+        "path",
+        `Windows destination cannot materialize artifact path: ${JSON.stringify(path)}; ${JSON.stringify(segment)} is a reserved device name or ends in a dot or space, which Windows reinterprets.`,
+      );
+  }
   return path;
 };
 

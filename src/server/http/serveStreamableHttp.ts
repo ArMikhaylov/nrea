@@ -10,7 +10,7 @@ import {
   type McpRequestContext,
   type Server,
 } from "@modelcontextprotocol/server";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -56,6 +56,8 @@ export interface ServeStreamableHttpOptions {
   readonly port: number;
   /** Operator-declared Host/Origin names; a non-loopback bind refuses to serve without them. */
   readonly allowedHosts?: readonly HttpHostname[];
+  /** When set, every request must present `Authorization: Bearer <token>`. */
+  readonly bearerToken?: string;
   /** Cancellation during listener startup; later shutdown remains owned by close(). */
   readonly signal?: AbortSignal;
   /** Called once; the instance serves every session in turn on a fresh transport. */
@@ -119,6 +121,26 @@ export const jsonRpcErrorResponse = (
     { status },
   );
 const jsonError = jsonRpcErrorResponse;
+
+const tokenDigest = (token: string): Buffer =>
+  createHash("sha256").update(token, "utf8").digest();
+
+/** Compare fixed-length digests so the check does not leak the token length or prefix. */
+export const bearerTokenMatches = (
+  request: Request,
+  expected: Buffer,
+): boolean => {
+  const header = request.headers.get("authorization");
+  const presented = header === null ? null : /^Bearer +(\S+)$/iu.exec(header);
+  if (presented?.[1] === undefined) return false;
+  return timingSafeEqual(tokenDigest(presented[1]), expected);
+};
+
+const UNAUTHORIZED = (): Response => {
+  const response = jsonError(401, -32001, "Missing or invalid bearer token");
+  response.headers.set("WWW-Authenticate", 'Bearer realm="rea-mcp"');
+  return response;
+};
 
 const protocolOf = (instance: McpServer | Server): Server =>
   "server" in instance ? instance.server : instance;
@@ -469,6 +491,10 @@ export const serveStreamableHttp = async (
   options: ServeStreamableHttpOptions,
 ): Promise<StreamableHttpServer> => {
   const { host, port, logger, routes = [], closeInstance = true } = options;
+  const expectedToken =
+    options.bearerToken === undefined
+      ? undefined
+      : tokenDigest(options.bearerToken);
   // Scoped IPv6 literals bind but cannot be named in a URL; refuse them before anything exists.
   if (host.includes("%"))
     throw new StreamableHttpListenError(
@@ -493,6 +519,11 @@ export const serveStreamableHttp = async (
         : (hostHeaderValidationResponse(request, allowedHosts) ??
           originValidationResponse(request, allowedHosts));
     if (refused !== undefined) return local(refused);
+    if (
+      expectedToken !== undefined &&
+      !bearerTokenMatches(request, expectedToken)
+    )
+      return local(UNAUTHORIZED());
     if (slot === undefined)
       return local(jsonError(503, -32000, "Server starting"));
     const { pathname } = new URL(request.url);

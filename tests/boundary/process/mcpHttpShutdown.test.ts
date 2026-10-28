@@ -3,7 +3,10 @@ import { describe, expect } from "vitest";
 
 import { MCP_SHUTDOWN_FAILED } from "../../../src/main/messages.js";
 import { rawHttpRequest } from "../../support/http/rawRequest.js";
-import { startMcpHttpProcess } from "../../support/mcp/streamableHttpProcess.js";
+import {
+  mcpHttpTestAuthorization,
+  startMcpHttpProcess,
+} from "../../support/mcp/streamableHttpProcess.js";
 import { processTest } from "../../support/process/processFixture.js";
 
 const SHUTDOWN_TIMEOUT_MS = 90_000;
@@ -21,7 +24,9 @@ describe.skipIf(process.platform === "win32")("rea mcp --http shutdown", () => {
       async ({ processes }) => {
         const started = await startMcpHttpProcess(processes);
         // The live transport refuses a GET that does not accept an event stream.
-        const before = await rawHttpRequest(started.url);
+        const before = await rawHttpRequest(started.url, {
+          headers: mcpHttpTestAuthorization,
+        });
         expect(before.status).toBe(406);
         started.child.kill(signal);
         const [code, signalCode] = await once(started.child, "close");

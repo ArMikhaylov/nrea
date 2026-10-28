@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
   httpHostnameSchema,
@@ -114,4 +115,44 @@ export const parseMcpHttpEndpoint = (
     port,
     ...(allowedHosts === undefined ? {} : { allowedHosts }),
   });
+};
+
+export const MCP_HTTP_TOKEN_SETTING = "REA_MCP_HTTP_TOKEN";
+export const MCP_HTTP_TOKEN_CONSTRAINT =
+  "REA_MCP_HTTP_TOKEN must be 32 to 512 characters of A-Z, a-z, 0-9, '-', '.', '_', '~', '+' or '/', optionally followed by '='.";
+
+// RFC 6750 b64token, with a floor that keeps guessing infeasible.
+const mcpHttpTokenSchema = z.string().regex(/^[A-Za-z0-9\-._~+/]{32,512}=*$/u);
+
+/** The bearer credential every `rea mcp --http` request must present. */
+export interface McpHttpBearerToken {
+  readonly token: string;
+  /** "generated" tokens exist only for this process and are announced once. */
+  readonly source: "setting" | "generated";
+}
+
+/**
+ * Loopback is reachable by every local process and OS user, so the listener
+ * always authenticates. An operator pins the token with REA_MCP_HTTP_TOKEN;
+ * otherwise a random one is generated for this process.
+ */
+export const resolveMcpHttpBearerToken = (
+  environment: Readonly<NodeJS.ProcessEnv>,
+  generate: () => string = () => randomBytes(32).toString("base64url"),
+): Result<McpHttpBearerToken, ConfigurationError> => {
+  const configured = environment[MCP_HTTP_TOKEN_SETTING];
+  if (configured === undefined)
+    return ok({ token: generate(), source: "generated" });
+  return mcpHttpTokenSchema.safeParse(configured).success
+    ? ok({ token: configured, source: "setting" })
+    : err(
+        new ConfigurationError(MCP_HTTP_TOKEN_CONSTRAINT, {
+          settings: [
+            {
+              setting: MCP_HTTP_TOKEN_SETTING,
+              constraint: MCP_HTTP_TOKEN_CONSTRAINT,
+            },
+          ],
+        }),
+      );
 };
