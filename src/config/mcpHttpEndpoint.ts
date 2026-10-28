@@ -157,7 +157,8 @@ export const resolveMcpHttpBearerToken = (
       );
 };
 
-export const MCP_HTTP_INSECURE_NETWORK_SETTING = "REA_MCP_HTTP_INSECURE_NETWORK";
+export const MCP_HTTP_INSECURE_NETWORK_SETTING =
+  "REA_MCP_HTTP_INSECURE_NETWORK";
 
 /** Whether `rea mcp --http` may bind outside loopback, where its token travels in plain HTTP. */
 export const resolveMcpHttpInsecureNetwork = (

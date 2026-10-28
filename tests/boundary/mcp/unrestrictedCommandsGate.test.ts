@@ -67,6 +67,7 @@ it("refuses target execution unless the operator opts in, independently of comma
   });
   expect(result.isError).toBe(true);
   expect(text(result)).toContain("REA_MCP_TARGET_EXECUTION");
+  expect(text(result)).toContain("runs the analyzed target");
 });
 
 it("refuses free-form engine commands unless the operator opts in", async () => {
@@ -81,6 +82,9 @@ it("refuses free-form engine commands unless the operator opts in", async () => 
   });
   expect(rizin.isError).toBe(true);
   expect(text(rizin)).toContain("REA_MCP_UNRESTRICTED_COMMANDS");
+  // A policy refusal, not a malformed-configuration report.
+  expect(text(rizin)).toContain("is disabled on this server");
+  expect(text(rizin)).not.toContain("configuration is invalid");
   expect(text(rizin)).not.toContain("rea-gate-target");
 
   const cutter = await client.callTool({

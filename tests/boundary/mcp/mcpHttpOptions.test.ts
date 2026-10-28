@@ -114,15 +114,23 @@ describe("MCP_HOST and MCP_PORT", () => {
   });
 
   it("keeps the HTTP listener on loopback unless the operator accepts plain-HTTP tokens", () => {
-    expect(resolveMcpHttpInsecureNetwork({})).toEqual({ ok: true, value: false });
+    expect(resolveMcpHttpInsecureNetwork({})).toEqual({
+      ok: true,
+      value: false,
+    });
     expect(
-      resolveMcpHttpInsecureNetwork({ REA_MCP_HTTP_INSECURE_NETWORK: "disabled" }),
+      resolveMcpHttpInsecureNetwork({
+        REA_MCP_HTTP_INSECURE_NETWORK: "disabled",
+      }),
     ).toEqual({ ok: true, value: false });
     expect(
-      resolveMcpHttpInsecureNetwork({ REA_MCP_HTTP_INSECURE_NETWORK: "enabled" }),
+      resolveMcpHttpInsecureNetwork({
+        REA_MCP_HTTP_INSECURE_NETWORK: "enabled",
+      }),
     ).toEqual({ ok: true, value: true });
     expect(
-      resolveMcpHttpInsecureNetwork({ REA_MCP_HTTP_INSECURE_NETWORK: "yes" }).ok,
+      resolveMcpHttpInsecureNetwork({ REA_MCP_HTTP_INSECURE_NETWORK: "yes" })
+        .ok,
     ).toBe(false);
   });
 

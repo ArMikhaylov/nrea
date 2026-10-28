@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { TOOL_EFFECTS } from "../contracts/toolEffects.js";
+import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import { ConfigurationError } from "../domain/configurationErrors.js";
 import { err, ok, type Result } from "../domain/result.js";
 
@@ -79,14 +80,16 @@ const REASONS: Readonly<Record<string, string>> = {
     "it runs the analyzed target or the application loaded into one with the user's permissions",
 };
 
-/** The refusal a gated tool returns before doing any work. */
+/**
+ * The refusal a gated tool returns before doing any work. It is an input
+ * refusal, not a configuration error: the setting is valid, the operator has
+ * simply not opted in, and the agent must not retry or route around it.
+ */
 export const gatedToolRefusal = (
   tool: string,
   setting: string,
-): ConfigurationError => {
-  const constraint = optInConstraint(setting);
-  return new ConfigurationError(
-    `${tool} is disabled: ${REASONS[setting] ?? "it is gated"}, and text inside an analyzed target can steer an agent into calling it. Ask the user to set ${setting}=enabled in the MCP server registration only if they accept that risk. Do not retry this call.`,
-    { settings: [{ setting, constraint }] },
-  );
-};
+): AnalysisInputError =>
+  new AnalysisInputError(tool, {
+    userMessage: `${tool} is disabled on this server: ${REASONS[setting] ?? "it is gated"}, and text inside an analyzed target can steer an agent into calling it.`,
+    remediationAction: `Do not retry this call. Tell the user what it would run; only they can enable it by setting ${setting}=enabled in the MCP server registration, and only if they accept that risk.`,
+  });

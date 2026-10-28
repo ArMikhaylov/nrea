@@ -141,6 +141,18 @@ mitmproxy 12.2.3, которых нет в среде. Рефакторить в
 - Остальные замечания ruff (E501 в длинных строковых литералах, PLR2004, SIM105)
   — косметика.
 
+### Найдено и исправлено по ходу раунда 2
+
+- **Отказ гейта выглядел как «конфигурация невалидна».** В раунде 1 отказ
+  строился как `ConfigurationError`, а его проекция заменяет текст на
+  `REA configuration is invalid: …`. Агент получал вводящее в заблуждение
+  сообщение без объяснения причины. Теперь это `AnalysisInputError` с
+  `userMessage` («… is disabled on this server: …») и `remediationAction`
+  («не повторять; спросить пользователя»); тест гейта проверяет именно текст.
+- **Тест pwndbg не запускал адаптер из его stage.** Добавленная в раунде 1
+  проверка `cwd` сломала производственный тест; тест исправлен под реальный
+  способ запуска и дополнен проверкой отказа вне stage.
+
 ### Breaking changes раунда 2
 
 1. MCP-тулы запуска таргета отклоняются без `REA_MCP_TARGET_EXECUTION=enabled`.
@@ -180,3 +192,20 @@ mitmproxy 12.2.3, которых нет в среде. Рефакторить в
 
 `ruff` по `bridge/`: 611 → 614 замечаний (+3 — длинные строки и
 magic-number в новых тестах), новых F/B/E9 нет.
+
+## 5. Результаты тестов (раунд 2)
+
+Linux x64, Node.js 24.22.1, Python 3.13, `npm run test:focused`:
+
+| Набор | Результат |
+|---|---|
+| `tsc --noEmit`, `oxfmt --check`, `oxlint` (изменённые файлы), `npm run docs:check` | чисто |
+| Hopper (13 файлов, Python-пробы реального кода моста на фейковом API), Cutter (TS + реальный Python-мост), HTTP-транспорт, сервер окружений, бандл, pwndbg, упаковка, conformance — 62 файла | 609 passed, 2 skipped (после правки теста pwndbg) |
+| Все файлы, вызывающие тулы запуска таргета через MCP — 40 файлов | 380 passed, 4 skipped (после явного опт-ина в 5 файлах с собственным окружением) |
+| `tests/fixtures/cutter_bridge_protocol_test.py` | 34/34 |
+| `bridge/pwndbg/test_core_context.py` | 7/7 |
+| Обёртки pwntools на подставных impl (`MemoryError`, реальная ошибка выделения, `EFBIG`) | коды 75/`M`, 75/`M`, 76/`F` |
+| `ruff --select F,E9,B bridge/` | чисто |
+
+Не запускалось: полный `npm run check:pr`; реальные Rizin (проверка
+`cfg.sandbox`), Cutter, Hopper, LLDB, pwntools, mitmproxy; Windows.
