@@ -3,7 +3,9 @@
 Only this package's fixed sibling is executed; caller input stays in request.json.
 Interpreter startup failures before this boundary remain unclassified.
 """
+import errno
 import os
+import runpy
 import sys
 
 
@@ -19,21 +21,20 @@ def resource_exit(status, marker):
     os._exit(status)
 
 try:
-    implementation = os.path.join(os.path.dirname(__file__), "recorded_crash_impl.py")
-    with open(implementation, "rb") as handle:
-        source = handle.read()
-    exec(compile(source, implementation, "exec"), {
-        "__file__": implementation,
-        "__name__": "__main__",
-    })
+    # Run by path: `python -I` keeps this directory off sys.path, so the
+    # sibling cannot be imported, and loading it here keeps its import-time
+    # allocation failures inside this classification boundary.
+    runpy.run_path(
+        os.path.join(os.path.dirname(__file__), "recorded_crash_impl.py"), run_name="__main__"
+    )
 except MemoryError:
     # Reserved status: an observed allocation failure, including imports/compile.
     resource_exit(75, b"M")
 except OSError as error:
-    # Linux ENOMEM is an observed allocation failure, independent of error text.
-    if error.errno == 12:
+    # ENOMEM is an observed allocation failure, independent of error text.
+    if error.errno == errno.ENOMEM:
         resource_exit(75, b"M")
-    # Linux EFBIG is observed directly, including a partial limits/reply write.
-    if error.errno == 27:
+    # EFBIG is observed directly, including a partial limits/reply write.
+    if error.errno == errno.EFBIG:
         resource_exit(76, b"F")
     raise

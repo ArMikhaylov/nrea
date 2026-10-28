@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { TOOL_EFFECTS } from "../contracts/toolEffects.js";
 import { ConfigurationError } from "../domain/configurationErrors.js";
 import { err, ok, type Result } from "../domain/result.js";
 
@@ -20,43 +21,72 @@ export const UNRESTRICTED_COMMAND_TOOLS: ReadonlySet<string> = new Set([
   "instrument_with_frida",
 ]);
 
+/**
+ * Every other tool whose declared effects run the analysis target (or the
+ * application loaded into one) with the user's permissions. Derived from the
+ * canonical effects so a new tool cannot silently skip the gate. Close tools
+ * stay available: they release owned processes and must never be refused.
+ */
+export const TARGET_EXECUTION_TOOLS: ReadonlySet<string> = new Set(
+  Object.entries(TOOL_EFFECTS)
+    .filter(
+      ([name, effects]) =>
+        effects.executesForeignCode &&
+        !UNRESTRICTED_COMMAND_TOOLS.has(name) &&
+        !name.startsWith("close_"),
+    )
+    .map(([name]) => name),
+);
+
 export const MCP_UNRESTRICTED_COMMANDS_SETTING =
   "REA_MCP_UNRESTRICTED_COMMANDS";
+export const MCP_TARGET_EXECUTION_SETTING = "REA_MCP_TARGET_EXECUTION";
 
-export const unrestrictedCommandsConstraint = `${MCP_UNRESTRICTED_COMMANDS_SETTING} must be "enabled" or "disabled"; unset means disabled.`;
+const optInConstraint = (setting: string): string =>
+  `${setting} must be "enabled" or "disabled"; unset means disabled.`;
 
-export const mcpUnrestrictedCommandsSchema = z.enum(["enabled", "disabled"]);
+export const mcpOptInSchema = z.enum(["enabled", "disabled"]);
 
-/** Parse the opt-in; anything but an exact "enabled" keeps the tools refused. */
-export const parseMcpUnrestrictedCommands = (
+/** Parse one opt-in; anything but an exact "enabled" keeps its tools refused. */
+export const parseMcpOptIn = (
+  setting: string,
   value: string | undefined,
 ): Result<boolean, ConfigurationError> => {
   if (value === undefined) return ok(false);
-  const parsed = mcpUnrestrictedCommandsSchema.safeParse(value);
+  const parsed = mcpOptInSchema.safeParse(value);
+  const constraint = optInConstraint(setting);
   return parsed.success
     ? ok(parsed.data === "enabled")
     : err(
-        new ConfigurationError(unrestrictedCommandsConstraint, {
-          settings: [
-            {
-              setting: MCP_UNRESTRICTED_COMMANDS_SETTING,
-              constraint: unrestrictedCommandsConstraint,
-            },
-          ],
+        new ConfigurationError(constraint, {
+          settings: [{ setting, constraint }],
         }),
       );
 };
 
-/** The refusal an unrestricted command tool returns before doing any work. */
-export const unrestrictedCommandRefusal = (tool: string): ConfigurationError =>
-  new ConfigurationError(
-    `${tool} is disabled: it runs free-form engine commands or scripts that can execute arbitrary code on this host, and text inside an analyzed target can steer an agent into calling it. Ask the user to set ${MCP_UNRESTRICTED_COMMANDS_SETTING}=enabled in the MCP server registration only if they accept that risk. Do not retry this call.`,
-    {
-      settings: [
-        {
-          setting: MCP_UNRESTRICTED_COMMANDS_SETTING,
-          constraint: unrestrictedCommandsConstraint,
-        },
-      ],
-    },
+/** The setting a gated tool waits for, or undefined when it is not gated. */
+export const gatingSetting = (tool: string): string | undefined =>
+  UNRESTRICTED_COMMAND_TOOLS.has(tool)
+    ? MCP_UNRESTRICTED_COMMANDS_SETTING
+    : TARGET_EXECUTION_TOOLS.has(tool)
+      ? MCP_TARGET_EXECUTION_SETTING
+      : undefined;
+
+const REASONS: Readonly<Record<string, string>> = {
+  [MCP_UNRESTRICTED_COMMANDS_SETTING]:
+    "it runs free-form engine commands or scripts that can execute arbitrary code on this host",
+  [MCP_TARGET_EXECUTION_SETTING]:
+    "it runs the analyzed target or the application loaded into one with the user's permissions",
+};
+
+/** The refusal a gated tool returns before doing any work. */
+export const gatedToolRefusal = (
+  tool: string,
+  setting: string,
+): ConfigurationError => {
+  const constraint = optInConstraint(setting);
+  return new ConfigurationError(
+    `${tool} is disabled: ${REASONS[setting] ?? "it is gated"}, and text inside an analyzed target can steer an agent into calling it. Ask the user to set ${setting}=enabled in the MCP server registration only if they accept that risk. Do not retry this call.`,
+    { settings: [{ setting, constraint }] },
   );
+};

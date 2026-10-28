@@ -157,6 +157,13 @@ def _frame_limit_exceeded():
     )
 
 
+def _unauthenticated_error_code(error: Exception) -> str:
+    """Map a pre-authentication failure to a fixed code."""
+    if isinstance(error, ValueError) and str(error).startswith("frame-limit-exceeded"):
+        return "frame-limit-exceeded"
+    return "bad-request"
+
+
 SOCKET_TIMEOUT_SECONDS = 20
 AUTH_FRAME_TIMEOUT_SECONDS = 1
 # The unauthenticated hello is a kind and a 64-hex nonce; it never needs the
@@ -869,7 +876,19 @@ class _BridgeServer(threading.Thread):
                             "message": "The command may have produced partial or persistent effects. Do not retry automatically.",
                         }, client_nonce, server_nonce)
                 except Exception as error:
-                    self._send(connection, {"ok": False, "error": str(error)})
+                    if authenticated:
+                        # The client verifies every post-authentication frame,
+                        # so the diagnostic must be signed to reach it.
+                        self._send_authenticated(connection, {
+                            "ok": False,
+                            "error": "bridge-exception",
+                            "execution_state": "unknown",
+                            "message": "%s: %s" % (type(error).__name__, error),
+                        }, client_nonce, server_nonce)
+                    else:
+                        # An unauthenticated peer learns only a fixed code,
+                        # never exception text, paths or configured limits.
+                        self._send(connection, {"ok": False, "error": _unauthenticated_error_code(error)})
         finally:
             self._note_connection_finished(connection_ordinal)
             with self._connections_lock:

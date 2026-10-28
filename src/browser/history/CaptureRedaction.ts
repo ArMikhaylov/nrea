@@ -4,9 +4,10 @@ import { parseRecordedTransportUrl } from "../../domain/recordedTransportUrl.js"
 
 type Redaction = WebNetworkCaptureRecord["redactions"][number];
 type TransportUrlContext = { readonly credentialBaseUrl?: string };
-// Standard credential carriers plus widely deployed API-key headers. Keep in
-// sync with CREDENTIALS in bridge/mitmproxy/capture.py.
-const CREDENTIAL_HEADERS = new Set([
+// Standard credential carriers plus widely deployed API-key headers.
+// tests/conformance/bridgeSharedSources.test.ts keeps CREDENTIALS in
+// bridge/mitmproxy/capture.py identical.
+export const CAPTURE_CREDENTIAL_HEADERS: ReadonlySet<string> = new Set([
   "authorization",
   "proxy-authorization",
   "cookie",
@@ -20,7 +21,7 @@ const CREDENTIAL_HEADERS = new Set([
 ]);
 /** HTTP credential names apply equally to recorded headers and gRPC-web trailers. */
 export const isCaptureCredentialHeader = (name: string): boolean =>
-  CREDENTIAL_HEADERS.has(name.toLowerCase());
+  CAPTURE_CREDENTIAL_HEADERS.has(name.toLowerCase());
 
 /** Match an ASCII header name without allocating a potentially enormous line. */
 export const isCaptureCredentialHeaderBytes = (
@@ -28,7 +29,7 @@ export const isCaptureCredentialHeaderBytes = (
   start: number,
   end: number,
 ): boolean => {
-  for (const name of CREDENTIAL_HEADERS) {
+  for (const name of CAPTURE_CREDENTIAL_HEADERS) {
     if (end - start !== name.length) continue;
     let matches = true;
     for (let index = 0; index < name.length; index++) {

@@ -2,11 +2,11 @@
 import json
 import os
 from pathlib import Path
+import runpy
 import sys
 
 runtime_path = Path(__file__).parent.parent / "pwntools" / "decoder_runtime.py"
-runtime = {"__file__": str(runtime_path), "__name__": "rea_decoder_runtime"}
-exec(compile(runtime_path.read_bytes(), str(runtime_path), "exec"), runtime)
+runtime = runpy.run_path(str(runtime_path), run_name="rea_decoder_runtime")
 
 
 class LaunchFailure(Exception):

@@ -772,8 +772,11 @@ token across restarts. When it is unset, REA generates a random token for this
 process and prints it once on stderr. REA removes `REA_MCP_HTTP_TOKEN` from its
 own environment after reading it, so providers it launches do not inherit it.
 The endpoint still uses plain HTTP without TLS: anyone who can observe the
-traffic can read the token. Use a non-loopback bind only within a trusted or
-isolated network. It does not provide separate users or independent target
+traffic can read the token. `rea mcp --http` therefore refuses a bind outside
+loopback unless `REA_MCP_HTTP_INSECURE_NETWORK=enabled`; the refusal is a
+`host_allowlist` listener failure with reason `insecure_transport`. Prefer a
+loopback listener behind a TLS-terminating proxy; enable the setting only on a
+trusted isolated network. It does not provide separate users or independent target
 sessions. Standard client registrations continue to use a dedicated stdio
 process.
 

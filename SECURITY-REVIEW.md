@@ -1,6 +1,6 @@
 # Ревью безопасности и качества кода форка `ArMikhaylov/nrea`
 
-База: `morluto/rea` @ `64196b0` (v6.8.0). Ветка с исправлениями: `security-hardening`.
+База: `morluto/rea` @ `64196b0` (v6.8.0). Раунд 1 — ветка `security-hardening` (вмержена, PR #1), раунд 2 — `security-hardening-2`.
 
 Область ревью: Python-мосты (`bridge/**/*.py`, ~4.5k строк, построчно + `ruff`),
 MCP-транспорт (stdio/HTTP), тулы с произвольными командами, распаковка
@@ -10,7 +10,7 @@ MCP-транспорт (stdio/HTTP), тулы с произвольными ко
 
 ---
 
-## 1. Что исправлено в этой ветке
+## 1. Раунд 1: что исправлено
 
 | # | Проблема | Серьёзность | Статус |
 |---|---|---|---|
@@ -78,93 +78,80 @@ MCP-транспорт (stdio/HTTP), тулы с произвольными ко
 
 ---
 
-## 2. Оставшиеся проблемы и как их исправить
+## 2. Раунд 2 (ветка `security-hardening-2`): оставшиеся находки
 
-### 2.1 [Средняя] HTTP-сервер RL-окружений без аутентификации читает локальные файлы и делает исходящие запросы
-
-`src/server/environment/stateIntake.ts:312-341` — метод `data/add` принимает
-файловую часть с `uri`: `file://` читается с диска (`readStateFile`), `https://`
-скачивается (`downloadState`). Сервер (`rea environment serve`,
-`src/server/environment/serveEnvironment.ts:480`) использует тот же
-`serveStreamableHttp`, но **без** токена, так что вызвать это может любой
-локальный процесс или другой пользователь ОС.
-
-Проверено по коду: документ строго валидируется схемой `rea-state/v1`
-(`src/application/environment/environmentStateStore.ts:163`), и только валидный
-документ попадает в состояние, которое отдаёт `data/get`. Поэтому содержимое
-произвольного файла (например, `~/.docker/config.json`) обратно **не**
-возвращается. Остаётся:
-- оракул: существует ли файл, читается ли он пользователем REA, JSON ли он и
-  JSON-pointer первого расхождения со схемой (`documentError`);
-- слепой SSRF: исходящий https-запрос на любой адрес от имени хоста;
-- подмена состояния окружения любым локальным процессом (`data/reset`, `data/add`).
-
-Варианты:
-- **A (рекомендую).** Передать `bearerToken` и в `serveEnvironment` (тот же код
-  уже готов), токен — в карточку окружения/конфиг AgentEnv.
-- **B.** Убрать `file://` из сетевого `data/add` (оставить только inline `bytes`);
-  чтение файлов — только через CLI.
-- **C.** Ограничить `file://` каталогом окружения (allowlist корня) и
-  `https://` — allowlist хостов из манифеста окружения.
-
-### 2.2 [Средняя] Тулы, которые запускают сам анализируемый таргет, не закрыты гейтом
-
-`capture_process_scenario`, `observe_native_calls`, `start_gdb_session`,
-`start_rizin_debug_session`, `capture_native_ui_scenario`,
-`capture_browser_scenario`, `capture_electron_scenario` помечены
-`executesForeignCode: true`: они запускают недоверенный бинарник/приложение
-с правами пользователя. Это их назначение, поэтому они не включены в гейт, но
-prompt injection может инициировать запуск без явного намерения пользователя.
-
-Варианты:
-- **A.** Второй уровень гейта `REA_MCP_TARGET_EXECUTION=enabled`.
-- **B.** MCP elicitation (подтверждение пользователем) перед каждым запуском таргета.
-- **C.** Принудительная песочница (bubblewrap/`sandbox-exec`) для запуска таргетов.
-
-### 2.3 [Средняя] Rizin без `cfg.sandbox` даже после опт-ина
-
-После `REA_MCP_UNRESTRICTED_COMMANDS=enabled` команды идут в Rizin без
-песочницы. Варианты: **A.** запускать с `-e cfg.sandbox=true` и отдельной
-настройкой для полного режима; **B.** белый список префиксов только для
-чтения (`i*`, `af*`, `pd*`, `px*`, `iz*`) — чёрный список (`!`) не годится
-из-за обходов `;!`, `` ` ``, `.`, `#!pipe`.
-
-### 2.4 [Средняя] Cutter на Windows остаётся на TCP loopback
-
-Там по-прежнему возможна блокировка 8 слотов локальным процессом (без знания
-токена) в фазе ожидания подписанного кадра (до 16 с), и буферизация до
-`MAX_FRAME_BYTES` до проверки HMAC. Варианты: **A.** named pipe с DACL текущего
-пользователя (в коде уже есть утилиты SDDL); **B.** протокол в два шага —
-короткий подписанный заголовок с длиной, затем тело.
-
-### 2.5 [Низкая] Токен HTTP передаётся по plain HTTP
-
-На loopback это приемлемо; при non-loopback bind токен читается из трафика.
-Варианты: TLS-терминация (встроенная или через reverse proxy), либо запрет
-non-loopback bind без TLS.
-
-### 2.6 [Низкая] Неподписанные ошибки и утечка текста исключений в Cutter-мосте
-
-`bridge/cutter/rea_bridge.py`, `_serve_connection`, ветка `except Exception`:
-текст исключения отправляется без подписи, в том числе неаутентифицированному
-клиенту. Варианты: до аутентификации — общий `"bad-request"`, после — через
-`_send_authenticated`.
-
-### 2.7 Качество кода (не исправлялось, без изменения поведения)
-
-| Проблема | Где | Как исправить |
+| # | Проблема | Статус |
 |---|---|---|
-| Неявный контракт через глобальные переменные: 14 × F821, bootstrap генерирует Python-код из TS через `JSON.stringify` | `bridge/hopper_bridge.py`, `src/hopper/BridgeLauncher.ts:681` | Конфиг в JSON-файле + `json.load`; или `runpy.run_path(init_globals=…)` + явная проверка обязательных имён |
-| `exec(compile(read()))` вместо импорта (7 мест), мёртвые импорты `json/os/resource/sys` | `bridge/pwntools/*`, `bridge/pwndbg/*` | `runpy.run_path` в том же `try/except MemoryError`; удалить импорты |
-| Магические `errno` 12/27 | `bridge/pwntools/layout.py`, `bridge/pwndbg/core_context.py` | `errno.ENOMEM`, `errno.EFBIG` (на macOS числа другие) |
-| Цикломатическая сложность: `_dispatch` 68, `inspect_elf` 52, `trace` 37, `project_record` 33 | мосты | Таблица диспетчеризации `dict[str, Callable]`; разбиение по типам/фазам |
-| Дословный дубль парсера `REA_BRIDGE_MAX_REQUEST_BYTES` | `hopper_bridge.py` / `cutter/rea_bridge.py` | Общий `bridge/_limits.py` или CI-проверка идентичности |
-| Три копии списка заголовков-учётных данных (TS ×2 → теперь ×1, Python ×1) | `CaptureRedaction.ts`, `capture.py` | Генерировать Python-список из TS при сборке или тест на равенство |
-| 427 строк > 88 символов, строки по ~400 символов | `bridge/mitmproxy/capture.py:~290` и др. | `ruff format` / разбиение выражений |
+| 2.1 | HTTP-сервер RL-окружений без аутентификации читал `file://` и скачивал `https://` по запросу клиента (оракул существования/формата файлов, слепой SSRF, подмена состояния) | **Исправлено**: `file://` и `https://` выключены по умолчанию; `REA_ENVIRONMENT_STATE_ROOT` разрешает чтение только внутри каталога (с проверкой symlink, путь вне корня отклоняется одинаково, есть файл или нет); `REA_ENVIRONMENT_STATE_HTTPS=enabled` разрешает загрузку; `REA_MCP_HTTP_TOKEN` включает bearer-аутентификацию; без токена — предупреждение в логе. Dockerfile бандла явно включает оба вида uri, чтобы изолированный контейнер сохранил контракт AgentEnv |
+| 2.2 | Тулы, запускающие сам таргет, не были закрыты гейтом | **Исправлено**: `REA_MCP_TARGET_EXECUTION=enabled`. Список выводится из аннотации `executesForeignCode` (новый тул с этим эффектом попадает под гейт автоматически); `close_*` никогда не блокируются. Сейчас это `capture_process_scenario`, `observe_native_calls`, `start_rizin_debug_session`, `resume_frida_session`, `capture_native_ui_scenario`, `capture_browser_scenario`, `capture_electron_scenario` |
+| 2.3 | Rizin без песочницы | **Исправлено**: one-shot `execute_rizin_command` идёт с `-e cfg.sandbox=true` до `-c`; отключение — `REA_RIZIN_SANDBOX=disabled`. **Не проверено на реальном Rizin** (запуск бинарника в среде ревью был запрещён) — проверьте `rizin -e cfg.sandbox=true -c '!id' /bin/true` |
+| 2.4 | Cutter на Windows остаётся на TCP loopback | **Не исправлено, осознанно** — см. 3.1 |
+| 2.5 | Bearer-токен по plain HTTP на не-loopback адресе | **Исправлено**: `rea mcp --http` отказывается слушать вне loopback без `REA_MCP_HTTP_INSECURE_NETWORK=enabled` (ошибка `host_allowlist`/`insecure_transport` с рекомендацией TLS-прокси) |
+| 2.6 | Cutter-мост отдавал текст исключений неаутентифицированным клиентам и неподписанные ошибки аутентифицированным | **Исправлено**: до аутентификации — только фиксированные коды (`bad-request`, `frame-limit-exceeded`); после — подписанный ответ `bridge-exception` |
+| 2.7 | Качество Python-мостов | **Частично**, см. ниже |
 
----
+### 2.7 Качество кода — что сделано
 
-## 3. Результаты тестов
+- **Hopper-мост:** 14 неявных глобальных имён (F821) заменены на `_bootstrap(name)`
+  с понятной ошибкой; при запуске все обязательные значения проверяются до
+  работы. `_dispatch` (цикломатическая сложность 68) переписан в таблицу
+  `_SESSION_OPERATIONS` / `_DOCUMENT_OPERATIONS`; набор из 39 методов сверен со
+  старой версией один к одному. Неизвестный метод теперь сразу получает
+  `Unknown bridge method`, без попытки найти документ.
+- **pwntools/pwndbg:** `exec(compile(open(...)))` → `runpy.run_path` (импорт
+  невозможен: `python -I` не кладёт каталог скрипта в `sys.path`); `errno.ENOMEM`
+  и `errno.EFBIG` вместо 12/27; удалены мёртвые импорты; `del` вместо
+  присваивания `None` для освобождения резерва памяти. Механика обёрток
+  проверена на подставных impl-файлах: `MemoryError` → 75/`M` (в том числе при
+  реальной ошибке выделения), `EFBIG` → 76/`F`.
+- **Дубли:** `tests/conformance/bridgeSharedSources.test.ts` фиксирует
+  идентичность парсера `REA_BRIDGE_MAX_REQUEST_BYTES` в двух мостах и списка
+  заголовков-учётных данных в TS (`CAPTURE_CREDENTIAL_HEADERS`) и
+  `capture.py`.
+- **Форматирование:** `ruff format` для `capture.py`, `layout_impl.py`,
+  `recorded_crash_impl.py`, `core_context.py`, `decoder_runtime.py`; AST до и после
+  совпадает. `ruff --select F,E9,B` по `bridge/` — чисто (было 21 ошибка).
+
+## 3. Что остаётся и почему
+
+### 3.1 Cutter-мост на Windows (TCP loopback)
+Локальный процесс может занять 8 слотов (hello не требует секрета, затем до 16 с
+ожидания подписанного кадра) — это **DoS моста, без утечки и выполнения кода**.
+Настоящее исправление — named pipe с DACL текущего пользователя (в коде уже
+есть утилиты SDDL). Не сделано: это заметный объём Windows-специфичного кода,
+который нельзя было запустить и протестировать в среде ревью, а правила
+репозитория требуют не наращивать сложность без согласования.
+Варианты: **A** named pipe; **B** двухшаговый протокол (короткий подписанный
+заголовок с длиной до чтения тела) — сокращает удержание слота с ~16 с до ~1 с,
+но DoS не устраняет.
+
+### 3.2 Сложные функции без тестового окружения
+`inspect_elf` (CC 52, pwntools), `trace` (CC 37, LLDB), `project_record` (CC 33,
+mitmproxy) не рефакторились: их тесты требуют pwntools 4.15.0, LLDB и
+mitmproxy 12.2.3, которых нет в среде. Рефакторить вслепую — риск регрессий в
+коде, работающем с недоверенными данными.
+
+### 3.3 Прочее
+- Bootstrap Hopper по-прежнему собирается из TS через `JSON.stringify` → Python-
+  литерал. Это корректно (строковый литерал JSON — подмножество Python), но
+  надёжнее передавать JSON-файл; сейчас контракт хотя бы явно проверяется.
+- `rea environment serve` без `REA_MCP_HTTP_TOKEN` остаётся без аутентификации
+  ради совместимости с AgentEnv; опасные возможности (`file://`, `https://`)
+  при этом выключены по умолчанию.
+- Остальные замечания ruff (E501 в длинных строковых литералах, PLR2004, SIM105)
+  — косметика.
+
+### Breaking changes раунда 2
+
+1. MCP-тулы запуска таргета отклоняются без `REA_MCP_TARGET_EXECUTION=enabled`.
+2. `rea environment serve` на хосте не принимает `file://`/`https://` без
+   `REA_ENVIRONMENT_STATE_ROOT` / `REA_ENVIRONMENT_STATE_HTTPS=enabled`
+   (Docker-бандл включает их сам).
+3. `rea mcp --http` на не-loopback адресе требует `REA_MCP_HTTP_INSECURE_NETWORK=enabled`.
+4. One-shot Rizin-команды идут в `cfg.sandbox`; `!`-команды не работают без
+   `REA_RIZIN_SANDBOX=disabled`.
+
+## 4. Результаты тестов (раунд 1)
 
 Окружение: Linux x64, Node.js 24.22.1, Python 3.13. Всё запускалось локально
 (`npm run test:focused`), CI форка не запускался.

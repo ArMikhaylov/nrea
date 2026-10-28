@@ -58,6 +58,8 @@ export interface ServeStreamableHttpOptions {
   readonly allowedHosts?: readonly HttpHostname[];
   /** When set, every request must present `Authorization: Bearer <token>`. */
   readonly bearerToken?: string;
+  /** False refuses a non-loopback bind: a bearer token must not cross the network in plain HTTP. */
+  readonly allowNonLoopback?: boolean;
   /** Cancellation during listener startup; later shutdown remains owned by close(). */
   readonly signal?: AbortSignal;
   /** Called once; the instance serves every session in turn on a fresh transport. */
@@ -587,6 +589,11 @@ export const serveStreamableHttp = async (
     if (loopbackHosts !== undefined) {
       allowedHosts = loopbackHosts;
     } else {
+      if (options.allowNonLoopback === false)
+        throw new StreamableHttpHostAllowlistError(
+          bound.address,
+          "insecure_transport",
+        );
       // Configuration supplies canonical names; the listener does not reinterpret them.
       if (
         options.allowedHosts === undefined ||

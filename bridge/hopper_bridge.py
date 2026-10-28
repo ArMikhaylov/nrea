@@ -10,7 +10,29 @@ import hmac
 import os
 import re
 import socket
-from typing import Any, Optional, Protocol, Sequence
+from typing import Optional, Protocol, Sequence
+
+
+# Values the Hopper bootstrap assigns into this module's globals before
+# executing it (see bridgeBootstrapSource in src/hopper/BridgeLauncher.ts).
+_BOOTSTRAP_NAMES = (
+    "REA_SOCKET",
+    "REA_TOKEN",
+    "REA_RUN_ID",
+    "REA_TARGET_PATH",
+    "REA_OWNS_PROCESS_LIFETIME",
+    "REA_RECONNECT_TIMEOUT_SECONDS",
+)
+
+
+def _bootstrap(name):
+    """Read one bootstrap-injected value, failing with the contract instead of NameError."""
+    try:
+        return globals()[name]
+    except KeyError:
+        raise RuntimeError(
+            "Hopper bridge bootstrap did not assign %s; start the bridge through REA" % name
+        ) from None
 
 BAD_ADDRESSES = (-1, 0xFFFFFFFFFFFFFFFF, None)
 # The native label setter truncates NSString names at this UTF-16 extent.
@@ -193,7 +215,7 @@ def _bind_session_document(documents=None):
     api = _api()
     if documents is None:
         documents = api.documents()
-    target = os.path.realpath(REA_TARGET_PATH)
+    target = os.path.realpath(_bootstrap("REA_TARGET_PATH"))
 
     def matches_target(document):
         paths = (document.getExecutableFilePath(), document.getDatabaseFilePath())
@@ -839,315 +861,395 @@ def _analyze_function(document, params):
     }
 
 
-def _dispatch(method, params):
-    """Dispatch only the closed operation set implemented by REA's public tools."""
-    if method == "health":
-        return {
-            "name": "REA Hopper bridge",
-            "version": "1.0.0",
-            "run_id": REA_RUN_ID,
-            "process_id": os.getpid(),
-            "max_request_bytes": MAX_REQUEST_BYTES,
-        }
-    if method in ("shutdown", "shutdown_document"):
-        document = _session_document()
-        if document is None:
-            return {"shutdown": True, "analysis_stopped": True, "document_closed": True}
-        if method == "shutdown" and not REA_OWNS_PROCESS_LIFETIME:
-            return {
-                "shutdown": True,
-                "analysis_stopped": not document.backgroundProcessActive(),
-                "document_closed": False,
-                "document_retained": True,
-            }
-        if document.backgroundProcessActive():
-            document.requestBackgroundProcessStop()
-        if method == "shutdown" and REA_OWNS_PROCESS_LIFETIME:
-            return {
-                "shutdown": True,
-                "analysis_stopped": not document.backgroundProcessActive(),
-                "document_closed": False,
-                "cleanup_required": True,
-            }
-        if document.backgroundProcessActive():
-            document.waitForBackgroundProcessToEnd()
-        document.closeDocument()
-        analysis_stopped = not document.backgroundProcessActive()
-        document_closed = _session_document() is None
+def _op_health(method, params):
+    return {
+        "name": "REA Hopper bridge",
+        "version": "1.0.0",
+        "run_id": _bootstrap("REA_RUN_ID"),
+        "process_id": os.getpid(),
+        "max_request_bytes": MAX_REQUEST_BYTES,
+    }
+
+
+def _op_shutdown(method, params):
+    document = _session_document()
+    if document is None:
+        return {"shutdown": True, "analysis_stopped": True, "document_closed": True}
+    if method == "shutdown" and not _bootstrap("REA_OWNS_PROCESS_LIFETIME"):
         return {
             "shutdown": True,
-            "analysis_stopped": analysis_stopped,
-            "document_closed": document_closed,
+            "analysis_stopped": not document.backgroundProcessActive(),
+            "document_closed": False,
+            "document_retained": True,
         }
-    if method == "list_documents":
-        return [document.getDocumentName() for document in _api().documents()]
-    if method == "current_document":
-        return _document().getDocumentName()
+    if document.backgroundProcessActive():
+        document.requestBackgroundProcessStop()
+    if method == "shutdown" and _bootstrap("REA_OWNS_PROCESS_LIFETIME"):
+        return {
+            "shutdown": True,
+            "analysis_stopped": not document.backgroundProcessActive(),
+            "document_closed": False,
+            "cleanup_required": True,
+        }
+    if document.backgroundProcessActive():
+        document.waitForBackgroundProcessToEnd()
+    document.closeDocument()
+    analysis_stopped = not document.backgroundProcessActive()
+    document_closed = _session_document() is None
+    return {
+        "shutdown": True,
+        "analysis_stopped": analysis_stopped,
+        "document_closed": document_closed,
+    }
+
+
+def _op_read_bytes(document, params, method):
+    length = params.get("length", 256)
+    if isinstance(length, bool) or not isinstance(length, int):
+        raise InvalidRequestError("Byte-read length must be an integer")
+    if length < 1:
+        raise InvalidRequestError("Byte-read length must be at least 1")
+    reader = getattr(document, "readBytes", None)
+    if not callable(reader):
+        raise CapabilityUnavailableError(
+            "Hopper's public Python API does not expose readBytes"
+        )
+    address = _address(document, params.get("address"))
+    segment = _segment(document, address)
+    # Document.readBytes delegates to one Segment and returns False when
+    # the requested range crosses its end. Preserve the readable prefix.
+    available = segment.getStartingAddress() + segment.getLength() - address
+    value = reader(address, min(length, available))
+    if value is False or value is None:
+        raise InvalidRequestError("Hopper could not read the requested byte range at %s" % _hex(address))
+    if not isinstance(value, (bytes, bytearray)):
+        raise CapabilityUnavailableError(
+            "Hopper readBytes returned %s for the requested %s-byte range at %s"
+            % (type(value).__name__, length, _hex(address))
+        )
+    data = bytes(value)
+    return {
+        "address": _hex(address),
+        "requested_bytes": length,
+        "returned_bytes": len(data),
+        "bytes_hex": data.hex(),
+        "complete": len(data) == length,
+    }
+
+
+def _op_address_to_file_offset(document, params, method):
+    mapper = getattr(document, "getFileOffsetFromAddress", None)
+    if not callable(mapper):
+        raise CapabilityUnavailableError(
+            "Hopper's public Python API does not expose getFileOffsetFromAddress"
+        )
+    address = _address(document, params.get("address"))
+    offset = mapper(address)
+    if (
+        isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset in BAD_ADDRESSES
+        or offset < 0
+    ):
+        raise InvalidRequestError("Address has no authoritative file-offset mapping")
+    inverse = getattr(document, "getAddressFromFileOffset", None)
+    if not callable(inverse):
+        raise CapabilityUnavailableError(
+            "Hopper's public Python API cannot verify the file-offset mapping by reverse lookup"
+        )
+    # Synthetic memory can report offset zero, which belongs to the actual
+    # file header. An integer alone does not prove source-file provenance.
+    if inverse(offset) != address:
+        raise InvalidRequestError("Address has no authoritative file-offset mapping: reverse lookup disagrees at %s" % _hex(address))
+    if offset > 9007199254740991:
+        raise CapabilityUnavailableError("Provider file offset exceeds the exact JSON integer range")
+    header_address = inverse(0)
+    reader = getattr(document, "readBytes", None)
+    header = reader(header_address, 12) if header_address not in BAD_ADDRESSES and document.getSegmentAtAddress(header_address) is not None and callable(reader) else None
+    return {
+        "address": _hex(address),
+        "provider_file_offset": offset,
+        "provider_source_path": document.getExecutableFilePath(),
+        "provider_image_header_hex": bytes(header).hex() if isinstance(header, (bytes, bytearray)) and len(header) == 12 else None,
+    }
+
+
+def _op_resolve_containing_procedure(document, params, method):
+    address = _address(document, params.get("address"))
+    procedure, reason = _containing_procedure(document, address)
+    if procedure is None:
+        return {"query_address": _hex(address), "found": False, "procedure": None, "reason": reason}
+    return {"query_address": _hex(address), "found": True, "procedure": _procedure_identity(procedure)}
+
+
+def _op_goto_address(document, params, method):
+    address = _address(document, params.get("address"))
+    segment = _segment(document, address)
+    expected = segment.getInstructionStart(address)
+    document.moveCursorAtAddress(address)
+    observed = document.getCurrentAddress()
+    if observed != (address if expected in BAD_ADDRESSES else expected):
+        raise InvalidRequestError("Hopper cursor did not reach the requested object at %s; observed %s" % (_hex(address), _hex(observed)))
+    return _hex(observed)
+
+
+def _op_address_fact(document, params, method):
+    target = _address(document, params.get("address"))
+    segment = _segment(document, target)
+    if method == "address_name":
+        return segment.getNameAtAddress(target)
+    if method == "comment":
+        return segment.getCommentAtAddress(target)
+    if method == "inline_comment":
+        return segment.getInlineCommentAtAddress(target)
+    return [_hex(value) for value in segment.getReferencesOfAddress(target)]
+
+
+def _op_adjacent_address(document, params, method):
+    target = _address(document, params.get("address"))
+    segment = _segment(document, target)
+    if method == "next_address":
+        start = segment.getInstructionStart(target)
+        if start in BAD_ADDRESSES:
+            raise InvalidRequestError("No analyzed object exists at the requested address")
+        length = segment.getObjectLength(start)
+        if length in BAD_ADDRESSES or length <= 0:
+            raise InvalidRequestError("No next analyzed object exists at the requested address")
+        result = start + length
+    else:
+        previous_segment = document.getSegmentAtAddress(target - 1) if target > 0 else None
+        if previous_segment is None:
+            raise InvalidRequestError("No previous address exists in mapped memory")
+        result = previous_segment.getInstructionStart(target - 1)
+    if result in BAD_ADDRESSES or document.getSegmentAtAddress(result) is None:
+        raise InvalidRequestError("No adjacent analyzed object exists in mapped memory")
+    return _hex(result)
+
+
+def _op_list_segments(document, params, method):
+    result = []
+    permission_limitation = _unavailable(
+        "Hopper's public Python API does not expose segment or section permissions"
+    )
+    for segment in document.getSegmentsList():
+        start = segment.getStartingAddress()
+        sections = [{
+            "name": section.getName(),
+            "start": _hex(section.getStartingAddress()),
+            "end": _hex(section.getStartingAddress() + section.getLength()),
+            "readable": None,
+            "writable": None,
+            "executable": None,
+            "permissions": permission_limitation,
+            "provenance": "hopper-public-python-api",
+        } for section in segment.getSectionsList()]
+        result.append({
+            "name": segment.getName(),
+            "start": _hex(start),
+            "end": _hex(start + segment.getLength()),
+            "readable": None,
+            "writable": None,
+            "executable": None,
+            "permissions": permission_limitation,
+            "provenance": "hopper-public-python-api",
+            "sections": sections,
+        })
+    return result
+
+
+def _op_list_strings(document, params, method):
+    requested = params.get("address")
+    values = _string_inventory(document, None if requested is None else {_address(document, requested)})
+    return [{"address": address, **record} for address, record in values.items()]
+
+
+def _op_list_names(document, params, method):
+    result = dict(_search_inventory(document, "name"))
+    requested = params.get("address")
+    if requested is not None:
+        key = _hex(_address(document, requested))
+        result = {key: result[key]} if key in result else {}
+    return [{"address": address, "value": value} for address, value in result.items()]
+
+
+def _op_search(document, params, method):
+    kind = "procedure" if method == "search_procedures" else "string"
+    return _search_results(document, kind, params)
+
+
+def _op_procedure(document, params, method):
+    procedure = _procedure(document, params.get("procedure"))
+    if method == "procedure_address":
+        return _hex(procedure.getEntryPoint())
+    if method == "procedure_assembly":
+        return _assembly(procedure)
+    if method == "procedure_pseudo_code":
+        return _pseudocode(document, procedure)
+    if method == "procedure_callers":
+        return sorted((_hex(item.getEntryPoint()) for item in procedure.getAllCallerProcedures()), key=lambda value: int(value, 16))
+    if method == "procedure_callees":
+        return sorted((_hex(item.getEntryPoint()) for item in procedure.getAllCalleeProcedures()), key=lambda value: int(value, 16))
+    if method == "procedure_info":
+        blocks = list(procedure.basicBlockIterator())
+        length = sum(max(0, _basic_block_end(procedure, block) - block.getStartingAddress()) for block in blocks)
+        return {
+            "name": _procedure_name(procedure),
+            "symbol": None,
+            "entrypoint": _hex(procedure.getEntryPoint()),
+            "basicblock_count": procedure.getBasicBlockCount(),
+            "length": length,
+            "signature": procedure.signatureString(),
+            "locals": _procedure_locals(procedure),
+            "classification": None,
+            "body": _procedure_identity(procedure)["body"],
+        }
+    raise InvalidRequestError("Unknown bridge method")
+
+
+def _op_set_address_name(document, params, method):
+    address = _address(document, params.get("address"))
+    name = _symbol_name(params["name"], "Name")
+    _validate_name_targets(document, [(params.get("address"), address, name)])
+    try:
+        result = document.setNameAtAddress(address, name)
+    finally:
+        _invalidate_search_inventory(document)
+        _invalidate_pseudocode(document)
+    return bool(result) and _name_matches(document, address, name)
+
+
+def _op_set_addresses_names(document, params, method):
+    # Validate all destinations before applying any annotation. A malformed
+    # later address must not discard the result of an earlier mutation.
+    names = [(key, _address(document, key), _symbol_name(value, "Name for %s" % key)) for key, value in params["names"].items()]
+    _validate_name_targets(document, names)
+    try:
+        result = {key: document.setNameAtAddress(address, value) for key, address, value in names}
+    finally:
+        _invalidate_search_inventory(document)
+        _invalidate_pseudocode(document)
+    return {key: bool(result[key]) and _name_matches(document, address, value) for key, address, value in names}
+
+
+def _op_set_comment(document, params, method):
+    address = _address(document, params.get("address"))
+    comment = _api_text(params["comment"], "Comment")
+    segment = _segment(document, address)
+    setter = segment.setCommentAtAddress if method == "set_comment" else segment.setInlineCommentAtAddress
+    getter = segment.getCommentAtAddress if method == "set_comment" else segment.getInlineCommentAtAddress
+    setter(address, comment)
+    _invalidate_pseudocode(document)
+    observed = getter(address)
+    return observed == comment or (comment == "" and observed is None)
+
+
+def _op_set_bookmark(document, params, method):
+    address = _address(document, params.get("address"))
+    _segment(document, address)
+    name = params.get("name")
+    if name is not None:
+        _api_text(name, "Bookmark name")
+    has_bookmark = _bookmark_api(document, "hasBookmarkAtAddress")
+    exists = has_bookmark(address)
+    if name is None and exists:
+        # Omission means preserve the existing bookmark and its name.
+        return True
+    _bookmark_api(document, "getBookmarkName")
+    if name == "" and exists:
+        rename = _bookmark_api(document, "renameBookmarkAtAddress")
+        rename(address, name)
+    else:
+        setter = _bookmark_api(document, "setBookmarkAtAddress")
+        setter(address, name)
+    if not has_bookmark(address):
+        return False
+    observed = _bookmark_name(document, address)
+    if name is None:
+        return observed is None or observed == ""
+    return observed == name or (name == "" and observed is None)
+
+
+def _op_unset_bookmark(document, params, method):
+    address = _address(document, params.get("address"))
+    # Permit removing a legacy orphan bookmark, but do not report success
+    # for an unmapped address with no bookmark to remove.
+    has_bookmark = _bookmark_api(document, "hasBookmarkAtAddress")
+    remove_bookmark = _bookmark_api(document, "removeBookmarkAtAddress")
+    if not has_bookmark(address):
+        _segment(document, address)
+    remove_bookmark(address)
+    return not has_bookmark(address)
+
+
+_SESSION_OPERATIONS = {
+    "health": _op_health,
+    "shutdown": _op_shutdown,
+    "shutdown_document": _op_shutdown,
+    "list_documents": lambda method, params: [document.getDocumentName() for document in _api().documents()],
+    "current_document": lambda method, params: _document().getDocumentName(),
+}
+
+_PROCEDURE_METHODS = (
+    "procedure_address",
+    "procedure_assembly",
+    "procedure_pseudo_code",
+    "procedure_callers",
+    "procedure_callees",
+    "procedure_info",
+)
+
+# The closed operation set implemented by REA's public tools.
+_DOCUMENT_OPERATIONS = {
+    "analyze_function": lambda document, params, method: _analyze_function(document, params),
+    "read_function_instructions": lambda document, params, method: _read_function_instructions(document, params),
+    "read_bytes": _op_read_bytes,
+    "address_to_file_offset": _op_address_to_file_offset,
+    "resolve_containing_procedure": _op_resolve_containing_procedure,
+    "procedure_references": lambda document, params, method: _procedure_references(document, params),
+    "current_address": lambda document, params, method: _hex(document.getCurrentAddress()),
+    "current_procedure": lambda document, params, method: _procedure_name(_procedure(document)),
+    "goto_address": _op_goto_address,
+    "address_name": _op_address_fact,
+    "comment": _op_address_fact,
+    "inline_comment": _op_address_fact,
+    "xrefs": _op_address_fact,
+    "next_address": _op_adjacent_address,
+    "prev_address": _op_adjacent_address,
+    "list_segments": _op_list_segments,
+    "list_procedures": lambda document, params, method: [
+        {"address": address, "value": value}
+        for address, value in _search_inventory(document, "procedure")
+    ],
+    "list_strings": _op_list_strings,
+    "list_names": _op_list_names,
+    "search_procedures": _op_search,
+    "search_strings": _op_search,
+    **{name: _op_procedure for name in _PROCEDURE_METHODS},
+    "set_address_name": _op_set_address_name,
+    "set_addresses_names": _op_set_addresses_names,
+    "set_comment": _op_set_comment,
+    "set_inline_comment": _op_set_comment,
+    "list_bookmarks": lambda document, params, method: [
+        {"address": _hex(item), "name": _bookmark_name(document, item)}
+        for item in _bookmark_api(document, "getBookmarks")()
+    ],
+    "set_bookmark": _op_set_bookmark,
+    "unset_bookmark": _op_unset_bookmark,
+}
+
+
+def _dispatch(method, params):
+    """Dispatch only the closed operation set implemented by REA's public tools."""
+    session_operation = _SESSION_OPERATIONS.get(method)
+    if session_operation is not None:
+        return session_operation(method, params)
+    operation = _DOCUMENT_OPERATIONS.get(method)
+    if operation is None:
+        raise InvalidRequestError("Unknown bridge method")
     document = _document(params.get("document"))
     if method in EXHAUSTIVE_ANALYSIS_METHODS:
         _api().require_analysis_complete(document, method)
-
-    if method == "analyze_function":
-        return _analyze_function(document, params)
-    if method == "read_function_instructions":
-        return _read_function_instructions(document, params)
-    if method == "read_bytes":
-        length = params.get("length", 256)
-        if isinstance(length, bool) or not isinstance(length, int):
-            raise InvalidRequestError("Byte-read length must be an integer")
-        if length < 1:
-            raise InvalidRequestError("Byte-read length must be at least 1")
-        reader = getattr(document, "readBytes", None)
-        if not callable(reader):
-            raise CapabilityUnavailableError(
-                "Hopper's public Python API does not expose readBytes"
-            )
-        address = _address(document, params.get("address"))
-        segment = _segment(document, address)
-        # Document.readBytes delegates to one Segment and returns False when
-        # the requested range crosses its end. Preserve the readable prefix.
-        available = segment.getStartingAddress() + segment.getLength() - address
-        value = reader(address, min(length, available))
-        if value is False or value is None:
-            raise InvalidRequestError("Hopper could not read the requested byte range at %s" % _hex(address))
-        if not isinstance(value, (bytes, bytearray)):
-            raise CapabilityUnavailableError(
-                "Hopper readBytes returned %s for the requested %s-byte range at %s"
-                % (type(value).__name__, length, _hex(address))
-            )
-        data = bytes(value)
-        return {
-            "address": _hex(address),
-            "requested_bytes": length,
-            "returned_bytes": len(data),
-            "bytes_hex": data.hex(),
-            "complete": len(data) == length,
-        }
-    if method == "address_to_file_offset":
-        mapper = getattr(document, "getFileOffsetFromAddress", None)
-        if not callable(mapper):
-            raise CapabilityUnavailableError(
-                "Hopper's public Python API does not expose getFileOffsetFromAddress"
-            )
-        address = _address(document, params.get("address"))
-        offset = mapper(address)
-        if (
-            isinstance(offset, bool)
-            or not isinstance(offset, int)
-            or offset in BAD_ADDRESSES
-            or offset < 0
-        ):
-            raise InvalidRequestError("Address has no authoritative file-offset mapping")
-        inverse = getattr(document, "getAddressFromFileOffset", None)
-        if not callable(inverse):
-            raise CapabilityUnavailableError(
-                "Hopper's public Python API cannot verify the file-offset mapping by reverse lookup"
-            )
-        # Synthetic memory can report offset zero, which belongs to the actual
-        # file header. An integer alone does not prove source-file provenance.
-        if inverse(offset) != address:
-            raise InvalidRequestError("Address has no authoritative file-offset mapping: reverse lookup disagrees at %s" % _hex(address))
-        if offset > 9007199254740991:
-            raise CapabilityUnavailableError("Provider file offset exceeds the exact JSON integer range")
-        header_address = inverse(0)
-        reader = getattr(document, "readBytes", None)
-        header = reader(header_address, 12) if header_address not in BAD_ADDRESSES and document.getSegmentAtAddress(header_address) is not None and callable(reader) else None
-        return {
-            "address": _hex(address),
-            "provider_file_offset": offset,
-            "provider_source_path": document.getExecutableFilePath(),
-            "provider_image_header_hex": bytes(header).hex() if isinstance(header, (bytes, bytearray)) and len(header) == 12 else None,
-        }
-    if method == "resolve_containing_procedure":
-        address = _address(document, params.get("address"))
-        procedure, reason = _containing_procedure(document, address)
-        if procedure is None:
-            return {"query_address": _hex(address), "found": False, "procedure": None, "reason": reason}
-        return {"query_address": _hex(address), "found": True, "procedure": _procedure_identity(procedure)}
-    if method == "procedure_references":
-        return _procedure_references(document, params)
-
-    if method == "current_address":
-        return _hex(document.getCurrentAddress())
-    if method == "current_procedure":
-        return _procedure_name(_procedure(document))
-    if method == "goto_address":
-        address = _address(document, params.get("address"))
-        segment = _segment(document, address)
-        expected = segment.getInstructionStart(address)
-        document.moveCursorAtAddress(address)
-        observed = document.getCurrentAddress()
-        if observed != (address if expected in BAD_ADDRESSES else expected):
-            raise InvalidRequestError("Hopper cursor did not reach the requested object at %s; observed %s" % (_hex(address), _hex(observed)))
-        return _hex(observed)
-    if method in ("address_name", "comment", "inline_comment", "xrefs"):
-        target = _address(document, params.get("address"))
-        segment = _segment(document, target)
-        if method == "address_name":
-            return segment.getNameAtAddress(target)
-        if method == "comment":
-            return segment.getCommentAtAddress(target)
-        if method == "inline_comment":
-            return segment.getInlineCommentAtAddress(target)
-        return [_hex(value) for value in segment.getReferencesOfAddress(target)]
-    if method in ("next_address", "prev_address"):
-        target = _address(document, params.get("address"))
-        segment = _segment(document, target)
-        if method == "next_address":
-            start = segment.getInstructionStart(target)
-            if start in BAD_ADDRESSES:
-                raise InvalidRequestError("No analyzed object exists at the requested address")
-            length = segment.getObjectLength(start)
-            if length in BAD_ADDRESSES or length <= 0:
-                raise InvalidRequestError("No next analyzed object exists at the requested address")
-            result = start + length
-        else:
-            previous_segment = document.getSegmentAtAddress(target - 1) if target > 0 else None
-            if previous_segment is None:
-                raise InvalidRequestError("No previous address exists in mapped memory")
-            result = previous_segment.getInstructionStart(target - 1)
-        if result in BAD_ADDRESSES or document.getSegmentAtAddress(result) is None:
-            raise InvalidRequestError("No adjacent analyzed object exists in mapped memory")
-        return _hex(result)
-    if method == "list_segments":
-        result = []
-        permission_limitation = _unavailable(
-            "Hopper's public Python API does not expose segment or section permissions"
-        )
-        for segment in document.getSegmentsList():
-            start = segment.getStartingAddress()
-            sections = [{
-                "name": section.getName(),
-                "start": _hex(section.getStartingAddress()),
-                "end": _hex(section.getStartingAddress() + section.getLength()),
-                "readable": None,
-                "writable": None,
-                "executable": None,
-                "permissions": permission_limitation,
-                "provenance": "hopper-public-python-api",
-            } for section in segment.getSectionsList()]
-            result.append({
-                "name": segment.getName(),
-                "start": _hex(start),
-                "end": _hex(start + segment.getLength()),
-                "readable": None,
-                "writable": None,
-                "executable": None,
-                "permissions": permission_limitation,
-                "provenance": "hopper-public-python-api",
-                "sections": sections,
-            })
-        return result
-    if method == "list_procedures":
-        return [{"address": address, "value": value} for address, value in _search_inventory(document, "procedure")]
-    if method == "list_strings":
-        requested = params.get("address")
-        values = _string_inventory(document, None if requested is None else {_address(document, requested)})
-        return [{"address": address, **record} for address, record in values.items()]
-    if method == "list_names":
-        result = dict(_search_inventory(document, "name"))
-        requested = params.get("address")
-        if requested is not None:
-            key = _hex(_address(document, requested))
-            result = {key: result[key]} if key in result else {}
-        return [{"address": address, "value": value} for address, value in result.items()]
-    if method in ("search_procedures", "search_strings"):
-        kind = "procedure" if method == "search_procedures" else "string"
-        return _search_results(document, kind, params)
-    if method.startswith("procedure_"):
-        procedure = _procedure(document, params.get("procedure"))
-        if method == "procedure_address":
-            return _hex(procedure.getEntryPoint())
-        if method == "procedure_assembly":
-            return _assembly(procedure)
-        if method == "procedure_pseudo_code":
-            return _pseudocode(document, procedure)
-        if method == "procedure_callers":
-            return sorted((_hex(item.getEntryPoint()) for item in procedure.getAllCallerProcedures()), key=lambda value: int(value, 16))
-        if method == "procedure_callees":
-            return sorted((_hex(item.getEntryPoint()) for item in procedure.getAllCalleeProcedures()), key=lambda value: int(value, 16))
-        if method == "procedure_info":
-            blocks = list(procedure.basicBlockIterator())
-            length = sum(max(0, _basic_block_end(procedure, block) - block.getStartingAddress()) for block in blocks)
-            return {
-                "name": _procedure_name(procedure),
-                "symbol": None,
-                "entrypoint": _hex(procedure.getEntryPoint()),
-                "basicblock_count": procedure.getBasicBlockCount(),
-                "length": length,
-                "signature": procedure.signatureString(),
-                "locals": _procedure_locals(procedure),
-                "classification": None,
-                "body": _procedure_identity(procedure)["body"],
-            }
-    if method == "set_address_name":
-        address = _address(document, params.get("address"))
-        name = _symbol_name(params["name"], "Name")
-        _validate_name_targets(document, [(params.get("address"), address, name)])
-        try:
-            result = document.setNameAtAddress(address, name)
-        finally:
-            _invalidate_search_inventory(document)
-            _invalidate_pseudocode(document)
-        return bool(result) and _name_matches(document, address, name)
-    if method == "set_addresses_names":
-        # Validate all destinations before applying any annotation. A malformed
-        # later address must not discard the result of an earlier mutation.
-        names = [(key, _address(document, key), _symbol_name(value, "Name for %s" % key)) for key, value in params["names"].items()]
-        _validate_name_targets(document, names)
-        try:
-            result = {key: document.setNameAtAddress(address, value) for key, address, value in names}
-        finally:
-            _invalidate_search_inventory(document)
-            _invalidate_pseudocode(document)
-        return {key: bool(result[key]) and _name_matches(document, address, value) for key, address, value in names}
-    if method in ("set_comment", "set_inline_comment"):
-        address = _address(document, params.get("address"))
-        comment = _api_text(params["comment"], "Comment")
-        segment = _segment(document, address)
-        setter = segment.setCommentAtAddress if method == "set_comment" else segment.setInlineCommentAtAddress
-        getter = segment.getCommentAtAddress if method == "set_comment" else segment.getInlineCommentAtAddress
-        setter(address, comment)
-        _invalidate_pseudocode(document)
-        observed = getter(address)
-        return observed == comment or (comment == "" and observed is None)
-    if method == "list_bookmarks":
-        return [{"address": _hex(item), "name": _bookmark_name(document, item)} for item in _bookmark_api(document, "getBookmarks")()]
-    if method == "set_bookmark":
-        address = _address(document, params.get("address"))
-        _segment(document, address)
-        name = params.get("name")
-        if name is not None:
-            _api_text(name, "Bookmark name")
-        has_bookmark = _bookmark_api(document, "hasBookmarkAtAddress")
-        exists = has_bookmark(address)
-        if name is None and exists:
-            # Omission means preserve the existing bookmark and its name.
-            return True
-        _bookmark_api(document, "getBookmarkName")
-        if name == "" and exists:
-            rename = _bookmark_api(document, "renameBookmarkAtAddress")
-            rename(address, name)
-        else:
-            setter = _bookmark_api(document, "setBookmarkAtAddress")
-            setter(address, name)
-        if not has_bookmark(address):
-            return False
-        observed = _bookmark_name(document, address)
-        if name is None:
-            return observed is None or observed == ""
-        return observed == name or (name == "" and observed is None)
-    if method == "unset_bookmark":
-        address = _address(document, params.get("address"))
-        # Permit removing a legacy orphan bookmark, but do not report success
-        # for an unmapped address with no bookmark to remove.
-        has_bookmark = _bookmark_api(document, "hasBookmarkAtAddress")
-        remove_bookmark = _bookmark_api(document, "removeBookmarkAtAddress")
-        if not has_bookmark(address):
-            _segment(document, address)
-        remove_bookmark(address)
-        return not has_bookmark(address)
-    raise InvalidRequestError("Unknown bridge method")
+    return operation(document, params, method)
 
 
 def _serve_connection(connection):
@@ -1193,7 +1295,7 @@ def _serve_connection(connection):
                     raise InvalidRequestError("Invalid bridge method or parameters")
                 if (
                     not isinstance(request["token"], str) or not request["token"].isascii()
-                    or not hmac.compare_digest(request["token"], REA_TOKEN)
+                    or not hmac.compare_digest(request["token"], _bootstrap("REA_TOKEN"))
                 ):
                     raise PermissionError("Invalid bridge capability")
                 authenticated = True
@@ -1286,36 +1388,40 @@ def _safe_diagnostic(error):
 
 def _run():
     """Own a permission-restricted, single-client Unix socket for this bridge."""
-    if os.path.exists(REA_SOCKET):
-        os.unlink(REA_SOCKET)
+    socket_path = _bootstrap("REA_SOCKET")
+    timeout = _bootstrap("REA_RECONNECT_TIMEOUT_SECONDS")
+    if os.path.exists(socket_path):
+        os.unlink(socket_path)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(REA_SOCKET)
-    os.chmod(REA_SOCKET, 0o600)
+    server.bind(socket_path)
+    os.chmod(socket_path, 0o600)
     server.listen(1)
     # A bridge can start after its caller's startup/cleanup deadline. Bound
     # the first accept as well as reconnects so an orphan cannot pin Hopper's
     # dedicated Python thread and prevent later documents from starting REA.
-    server.settimeout(REA_RECONNECT_TIMEOUT_SECONDS)
+    server.settimeout(timeout)
     try:
         while True:
             try:
                 connection, _ = server.accept()
             except socket.timeout:
                 break
-            connection.settimeout(REA_RECONNECT_TIMEOUT_SECONDS)
+            connection.settimeout(timeout)
             if _serve_connection(connection):
                 break
             # Match REA's cleanup handshake budget without pinning Hopper's
             # Python thread indefinitely after a client disappears.
-            server.settimeout(REA_RECONNECT_TIMEOUT_SECONDS)
+            server.settimeout(timeout)
     finally:
         server.close()
-        if os.path.exists(REA_SOCKET):
-            os.unlink(REA_SOCKET)
+        if os.path.exists(socket_path):
+            os.unlink(socket_path)
 
 
 # Hopper's public objects are bound to its dedicated Python execution thread.
 # Keep dispatch on that thread; moving calls to a worker can deadlock.
 if __name__ == "__main__":
+    for _name in _BOOTSTRAP_NAMES:
+        _bootstrap(_name)
     _bind_session_document()
     _run()

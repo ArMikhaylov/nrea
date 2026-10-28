@@ -4,7 +4,8 @@ import { err, ok, type Result } from "../../domain/result.js";
 export type StreamableHttpListenFailure =
   | {
       readonly kind: "host_allowlist";
-      readonly reason: "missing";
+      /** No declared hosts, or a bearer token would cross the network in plain HTTP. */
+      readonly reason: "missing" | "insecure_transport";
     }
   | {
       readonly kind: "host_lookup";
@@ -75,11 +76,16 @@ export class StreamableHttpHostAllowlistError extends Error {
     { kind: "host_allowlist" }
   >;
 
-  constructor(address: string) {
+  constructor(
+    address: string,
+    reason: "missing" | "insecure_transport" = "missing",
+  ) {
     super(
-      `Refusing to serve ${address} outside loopback without an operator-declared host allowlist; set MCP_ALLOWED_HOSTS (or --allowed-hosts) to every host name clients will use, then retry`,
+      reason === "missing"
+        ? `Refusing to serve ${address} outside loopback without an operator-declared host allowlist; set MCP_ALLOWED_HOSTS (or --allowed-hosts) to every host name clients will use, then retry`
+        : `Refusing to serve ${address} outside loopback: the bearer token would cross the network in plain HTTP; terminate TLS in front of a loopback listener, or set REA_MCP_HTTP_INSECURE_NETWORK=enabled on a trusted isolated network`,
     );
-    this.failure = { kind: "host_allowlist", reason: "missing" };
+    this.failure = { kind: "host_allowlist", reason };
   }
 }
 
@@ -91,6 +97,8 @@ const listenerRemediation = (
     return "Check the selected listener host, port, and binding permissions, then retry.";
   switch (classification.value.kind) {
     case "host_allowlist":
+      if (classification.value.reason === "insecure_transport")
+        return "Bind to loopback and put a TLS-terminating proxy in front of it, or set REA_MCP_HTTP_INSECURE_NETWORK=enabled only on a trusted isolated network, then retry.";
       return "Set MCP_ALLOWED_HOSTS to the host names or IP addresses clients will use, without URL components or ports, then retry. For rea mcp --http, --allowed-hosts accepts the same comma-separated list.";
     case "host_lookup":
       return "Check --host or MCP_HOST and host name resolution; correct the value or resolve the lookup failure, then retry.";

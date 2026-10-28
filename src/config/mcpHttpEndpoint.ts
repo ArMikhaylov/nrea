@@ -156,3 +156,20 @@ export const resolveMcpHttpBearerToken = (
         }),
       );
 };
+
+export const MCP_HTTP_INSECURE_NETWORK_SETTING = "REA_MCP_HTTP_INSECURE_NETWORK";
+
+/** Whether `rea mcp --http` may bind outside loopback, where its token travels in plain HTTP. */
+export const resolveMcpHttpInsecureNetwork = (
+  environment: Readonly<NodeJS.ProcessEnv>,
+): Result<boolean, ConfigurationError> => {
+  const value = environment[MCP_HTTP_INSECURE_NETWORK_SETTING];
+  if (value === undefined || value === "disabled") return ok(false);
+  if (value === "enabled") return ok(true);
+  const constraint = `${MCP_HTTP_INSECURE_NETWORK_SETTING} must be "enabled" or "disabled"; unset means disabled.`;
+  return err(
+    new ConfigurationError(constraint, {
+      settings: [{ setting: MCP_HTTP_INSECURE_NETWORK_SETTING, constraint }],
+    }),
+  );
+};

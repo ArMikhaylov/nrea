@@ -174,6 +174,10 @@ export const bundleDockerfile = (
     // as the compose service name (the environment name) and host-side clients go
     // through the published loopback port.
     `ENV MCP_ALLOWED_HOSTS=${BUNDLE_ALLOWED_HOSTS}${name === undefined ? "" : `,${name}`}`,
+    // Inside the isolated container the AgentEnv intake contract (urn:agentenv:intake/v1)
+    // keeps file:// and https:// state uris; a host-run server refuses them by default.
+    "ENV REA_ENVIRONMENT_STATE_ROOT=/",
+    "ENV REA_ENVIRONMENT_STATE_HTTPS=enabled",
     READINESS_PROBE_LAYER,
     installLine(source),
     // Owned by the runtime user, so a private host umask cannot make the inputs unreadable.

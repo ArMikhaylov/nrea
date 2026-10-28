@@ -17,6 +17,16 @@ The tools stay listed so the refusal names the setting. The equivalent CLI
 commands are typed by the operator and are not gated. Enable the setting only
 for targets you trust, or inside an isolated VM or container.
 
+A second, independent opt-in covers tools that run the analyzed target itself
+or the application loaded into one: `capture_process_scenario`,
+`observe_native_calls`, `start_rizin_debug_session`, `resume_frida_session`,
+`capture_native_ui_scenario`, `capture_browser_scenario` and
+`capture_electron_scenario`. They refuse over MCP until
+`REA_MCP_TARGET_EXECUTION=enabled`. The list is derived from each tool's
+declared `executesForeignCode` effect, so a new tool with that effect is gated
+automatically; `close_*` tools are never gated because they release owned
+processes.
+
 In a shared MCP server, unrestricted Rizin and Cutter commands, GDB console
 commands, Rizin debugger start/close, and GDB debugger close retire any active
 binary analysis session after the operation. This prevents a fresh analysis
@@ -87,6 +97,16 @@ close_gdb_session {"session_id":"…"}
 ```
 
 ## Rizin
+
+One-shot `execute_rizin_command` and `rea execute-rizin-command` pass
+`-e cfg.sandbox=true` before `-c`, so the command runs in Rizin's sandbox mode
+(no shell escapes such as `!cmd` or `#!pipe`, and the setting cannot be turned
+off again from the command). Set `REA_RIZIN_SANDBOX=disabled` in the provider
+environment only when a trusted workflow needs the unsandboxed engine.
+Persistent debugger sessions are not sandboxed: debugging needs process
+control, so `rizin_debug_command` stays behind `REA_MCP_UNRESTRICTED_COMMANDS`.
+Cutter commands run inside the user's GUI session, whose configuration REA
+does not change.
 
 `start_rizin_debug_session` and `rea debug-with-rizin` require an explicit `inferior_tty` on Linux. Rizin launches the target with stdout and stderr routed to that caller-selected TTY and `dbg.exitkills=false`; the target can therefore continue running and writing to the TTY after REA closes the debugger. This is a visible target output effect, and the caller is responsible for selecting a suitable terminal that remains available. Before closing, REA serializes after the active command, parses the structured `olj` descriptor list, detaches only a unique `ptrace://` descriptor, confirms its absence, reads back `dbg.exitkills=false`, and verifies `/proc/<pid>/fd/1` and `/proc/<pid>/fd/2` still identify the selected TTY by device and inode. If a previously identified inferior exits after Rizin confirms detach, REA verifies that the original process has ended instead of requiring output descriptors from an exited process. Unresolved identity or ambiguous readback keeps the Rizin session owned for retry. After output limits or a failed command interval, cleanup first waits up to 1000 ms for a fresh private NUL-delimited marker, discarding earlier frames before obtaining that new inferior readback. Synchronization never reopens user command admission. A missing marker, unavailable transport, or unknown inferior identity retains the cleanup owner. Caller cancellation keeps its exact reason and typed cancellation outcome even when cleanup remains incomplete; a successful retry resolves that retained cleanup state. Cancellation during final cleanup retains the captured observation and cleanup owner. An already observed startup or protocol failure remains primary and retains a later cancellation as a secondary failure; recovering the transport does not erase that original diagnosis. Persistent Rizin debugger sessions are unavailable outside Linux because this verification depends on `/proc`.
 

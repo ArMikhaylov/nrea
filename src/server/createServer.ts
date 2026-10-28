@@ -99,8 +99,9 @@ import { EvidenceMcpServer } from "./EvidenceMcpServer.js";
 import { catalogIdentityForToolFamilies } from "../catalogIdentity.js";
 import { parseMcpToolFamilies } from "../config/mcpToolFamilies.js";
 import {
+  MCP_TARGET_EXECUTION_SETTING,
   MCP_UNRESTRICTED_COMMANDS_SETTING,
-  parseMcpUnrestrictedCommands,
+  parseMcpOptIn,
 } from "../config/mcpUnrestrictedCommands.js";
 import { createToolResultDelivery } from "./toolResult.js";
 import type { ToolResultDelivery } from "./ToolResultDelivery.js";
@@ -527,7 +528,14 @@ export const createServer = (
       advertisedToolFamilies,
     );
   server.analysisSettings = analysisSettings;
-  server.unrestrictedCommandsEnabled = selectUnrestrictedCommands(environment);
+  server.unrestrictedCommandsEnabled = selectOptIn(
+    environment,
+    MCP_UNRESTRICTED_COMMANDS_SETTING,
+  );
+  server.targetExecutionEnabled = selectOptIn(
+    environment,
+    MCP_TARGET_EXECUTION_SETTING,
+  );
   registerAnalysisSettingsTools(server, analysisSettings);
   if (options.mcpServer !== undefined) {
     server.attachRuntime(
@@ -1336,12 +1344,11 @@ const registerObservationTools = ({
   });
 };
 
-const selectUnrestrictedCommands = (
+const selectOptIn = (
   environment: Readonly<NodeJS.ProcessEnv>,
+  setting: string,
 ): boolean => {
-  const configured = parseMcpUnrestrictedCommands(
-    environment[MCP_UNRESTRICTED_COMMANDS_SETTING],
-  );
+  const configured = parseMcpOptIn(setting, environment[setting]);
   if (!configured.ok) throw configured.error;
   return configured.value;
 };
